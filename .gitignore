@@ -1,0 +1,76 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# --- Virtual Envs ---
+.venv/
+venv/
+env/
+
+# --- Editors/Tools ---
+.vscode/
+.idea/
+.cursor/
+.windsurf/
+.agent-tools/
+
+# --- Logs/Runtime ---
+*.log
+app.log
+detailed_log.txt
+ocr_log.txt
+
+# --- Large assets (nicht ins Repo) ---
+01_Fotos/
+**/Pics/
+**/Endo-Bilder/
+**/Berichte/
+**/Ve/
+**/out/
+*.heic
+*.HEIC
+*.jpg
+*.JPG
+*.jpeg
+*.png
+*.bmp
+
+# --- OS/Temp ---
+.DS_Store
+Thumbs.db
+~$*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.log
+*.txt
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+01_Fotos/
+GearBoxExiff.json
+last_folder.txt
+
+
+
