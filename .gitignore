@@ -51,6 +51,8 @@ __pycache__/
 .Python
 *.log
 *.txt
+# Keep Python dependency manifest tracked
+!requirements.txt
 
 # Virtual Environment
 venv/
