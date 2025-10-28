@@ -2,7 +2,6 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 PySide6>=6.5
 pillow>=10.0.0
-opencv-python>=4.8.0
+# pandas uses numpy as a dependency
 numpy>=1.26.0
 pandas>=2.1.0
-easyocr>=1.7.1
