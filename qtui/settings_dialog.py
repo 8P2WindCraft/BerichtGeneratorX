@@ -170,6 +170,27 @@ class SettingsDialog(QDialog):
         image_layout.addRow("Standard-Zoom:", self.zoom_factor_spin)
         
         layout.addWidget(image_group)
+
+        # Tag-Anzeige (vorher im OCR-Tab)
+        tag_group = QGroupBox("Tag-Anzeige")
+        tag_layout = QFormLayout(tag_group)
+
+        self.gallery_tag_size_spin = QSpinBox()
+        self.gallery_tag_size_spin.setRange(6, 20)
+        self.gallery_tag_size_spin.setSuffix(" pt")
+        tag_layout.addRow("Galerie Schriftgröße:", self.gallery_tag_size_spin)
+
+        self.single_tag_size_spin = QSpinBox()
+        self.single_tag_size_spin.setRange(8, 24)
+        self.single_tag_size_spin.setSuffix(" pt")
+        tag_layout.addRow("Einzelbild Schriftgröße:", self.single_tag_size_spin)
+
+        self.tag_opacity_slider = QSlider(Qt.Horizontal)
+        self.tag_opacity_slider.setRange(50, 255)
+        self.tag_opacity_slider.setValue(200)
+        tag_layout.addRow("Transparenz:", self.tag_opacity_slider)
+
+        layout.addWidget(tag_group)
         
         layout.addStretch()
         self.tab_widget.addTab(tab, "Anzeige")
