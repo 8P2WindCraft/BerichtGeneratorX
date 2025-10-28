@@ -101,6 +101,13 @@ class GalleryView(QWidget):
         toolbar.addWidget(self.search_field)
         
         toolbar.addStretch()
+
+        # Layout-Auswahl (2x2, 3x3, 4x4, Auto-Fit)
+        toolbar.addWidget(QLabel("Layout:"))
+        self.grid_mode_combo = QComboBox()
+        self.grid_mode_combo.addItems(["Auto-Fit", "2 x 2", "3 x 3", "4 x 4"])
+        self.grid_mode_combo.currentTextChanged.connect(self._on_grid_mode_changed)
+        toolbar.addWidget(self.grid_mode_combo)
         
         # Pagination
         self.page_spin = QSpinBox()
@@ -138,10 +145,73 @@ class GalleryView(QWidget):
         self._loader.timeout.connect(self._load_chunk)
         self._current_page = 1
         self._items_per_page = 20
+        self._grid_mode = 'auto'  # 'auto' oder (rows, cols)
+        self._rows = 0
+        self._cols = 5
         self._current_folder = ""
         
         # Verbindungen
         self.btn_open.clicked.connect(self._open_folder)
+        # Erste Layout-Berechnung
+        self._recalculate_layout()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Bei Größenänderung: Auto-Fit oder feste Raster neu berechnen
+        self._recalculate_layout()
+        self._update_pagination()
+        self._render_grid()
+
+    def _on_grid_mode_changed(self, text: str):
+        t = text.strip().lower()
+        if t.startswith('2'):
+            self._grid_mode = (2, 2)
+        elif t.startswith('3'):
+            self._grid_mode = (3, 3)
+        elif t.startswith('4'):
+            self._grid_mode = (4, 4)
+        else:
+            self._grid_mode = 'auto'
+        self._recalculate_layout()
+        self._update_pagination()
+        self._render_grid()
+
+    def _recalculate_layout(self):
+        """Berechnet Raster (Zeilen/Spalten) und Thumb-Größe aus Modus + verfügbarer Fläche."""
+        try:
+            vp = self.area.viewport().size()
+            avail_w = max(100, vp.width())
+            avail_h = max(100, vp.height())
+            m = self.grid.contentsMargins()
+            spacing_h = self.grid.horizontalSpacing() or 0
+            spacing_v = self.grid.verticalSpacing() or 0
+            pad_w = (m.left() if hasattr(m, 'left') else 8) + (m.right() if hasattr(m, 'right') else 8)
+            pad_h = (m.top() if hasattr(m, 'top') else 8) + (m.bottom() if hasattr(m, 'bottom') else 8)
+            inner_w = max(50, avail_w - pad_w)
+            inner_h = max(50, avail_h - pad_h)
+
+            # Basisgröße aus Settings (Seitenverhältnis ~ 4:3)
+            base_w = int(self.settings_manager.get('thumb_size', 160) or 160)
+            base_h = int(base_w * 0.75)
+
+            if self._grid_mode == 'auto':
+                cols = max(1, inner_w // (base_w + spacing_h))
+                rows = max(1, inner_h // (base_h + spacing_v))
+            else:
+                rows, cols = self._grid_mode
+
+            # Zellen-Größe passend verteilen
+            cell_w = max(32, int((inner_w - spacing_h * max(0, cols - 1)) / cols))
+            cell_h = max(32, int((inner_h - spacing_v * max(0, rows - 1)) / rows))
+            self._thumb_size = (cell_w, cell_h)
+            self._rows = rows
+            self._cols = cols
+            self._items_per_page = max(1, rows * cols)
+        except Exception:
+            # Fallback auf frühere Defaults
+            self._rows, self._cols = (4, 5)
+            self._items_per_page = self._rows * self._cols
+            self._thumb_size = (160, 120)
 
     def _create_evaluation_sidebar(self):
         """Erstellt das rechte Bewertungs-Panel"""
@@ -388,7 +458,7 @@ class GalleryView(QWidget):
         end_idx = min(start_idx + self._items_per_page, len(self._filtered_paths))
         current_paths = self._filtered_paths[start_idx:end_idx]
         
-        cols = 5
+        cols = max(1, self._cols or 5)
         w, h = self._thumb_size
         for idx, path in enumerate(current_paths):
             r, c = divmod(idx, cols)
@@ -620,5 +690,4 @@ class GalleryView(QWidget):
         except Exception:
             pass
         self.imageSelected.emit(path)
-
 
