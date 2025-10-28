@@ -57,9 +57,9 @@ class SettingsDialog(QDialog):
         # Tabs erstellen
         self._create_general_tab()
         self._create_display_tab()
-        self._create_crop_tab()
         self._create_categories_tab()
-        self._create_lists_tab()
+        self._create_damage_tab()
+        self._create_image_types_tab()
         self._create_kurzel_tab()
         
         # Einstellungen laden
@@ -304,80 +304,104 @@ class SettingsDialog(QDialog):
         except Exception as e:
             self._log.error("categories_load_failed", extra={"event": "categories_load_failed", "error": str(e)})
 
-    def _create_lists_tab(self):
-        """Mehrsprachige Tabellen (je 5 Punkte) für Schäden und Bildarten"""
+    def _create_damage_tab(self):
+        """Schadenskategorien: zweisprachige Tabelle (5 Punkte)"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        self.tbl_damage = QTableWidget(5, 3)
+        self.tbl_damage.setHorizontalHeaderLabels(["#", "Deutsch", "Englisch"])
+        self.tbl_damage.verticalHeader().setVisible(False)
+        self.tbl_damage.horizontalHeader().setStretchLastSection(True)
+        for r in range(5):
+            self.tbl_damage.setItem(r, 0, QTableWidgetItem(str(r+1)))
+            it = self.tbl_damage.item(r, 0)
+            it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        layout.addWidget(self.tbl_damage)
 
-        def _make_table(title: str):
-            box = QGroupBox(title)
-            v = QVBoxLayout(box)
-            table = QTableWidget(5, 1)
-            table.setHorizontalHeaderLabels(["Bezeichnung (1..5)"])
-            table.horizontalHeader().setStretchLastSection(True)
-            v.addWidget(table)
-            return box, table
-
-        # Vier Tabellen: Schäden DE/EN, Bildarten DE/EN
-        self.grp_damage_de, self.tbl_damage_de = _make_table("Schadenskategorien (Deutsch) – 5 Punkte")
-        self.grp_damage_en, self.tbl_damage_en = _make_table("Damage Categories (English) – 5 items")
-        self.grp_img_de, self.tbl_img_de = _make_table("Bildarten (Deutsch) – 5 Punkte")
-        self.grp_img_en, self.tbl_img_en = _make_table("Image Types (English) – 5 items")
-
-        layout.addWidget(self.grp_damage_de)
-        layout.addWidget(self.grp_damage_en)
-        layout.addWidget(self.grp_img_de)
-        layout.addWidget(self.grp_img_en)
-
-        # Standardwerte-Button
-        btns = QHBoxLayout()
-        self.btn_reset_lists = QPushButton("Standardwerte wiederherstellen")
-        self.btn_reset_lists.clicked.connect(self._reset_lists_to_defaults)
-        btns.addStretch(1); btns.addWidget(self.btn_reset_lists)
-        layout.addLayout(btns)
+        btns = QHBoxLayout(); layout.addLayout(btns)
+        btns.addStretch(1)
+        btn_reset = QPushButton("Standardwerte wiederherstellen")
+        btn_reset.clicked.connect(self._reset_damage_defaults)
+        btns.addWidget(btn_reset)
 
         layout.addStretch(1)
-        self.tab_widget.addTab(tab, "Listen (DE/EN)")
-        self._load_lists_from_settings()
+        self.tab_widget.addTab(tab, "Schadenskategorien")
+        self._load_damage_from_settings()
 
-    def _reset_lists_to_defaults(self):
-        """Setzt Tabellen anhand der zentralen Defaults zurück (gekürzt auf 5)."""
+    def _create_image_types_tab(self):
+        """Bildarten: zweisprachige Tabelle (5 Punkte)"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self.tbl_images = QTableWidget(5, 3)
+        self.tbl_images.setHorizontalHeaderLabels(["#", "Deutsch", "Englisch"])
+        self.tbl_images.verticalHeader().setVisible(False)
+        self.tbl_images.horizontalHeader().setStretchLastSection(True)
+        for r in range(5):
+            self.tbl_images.setItem(r, 0, QTableWidgetItem(str(r+1)))
+            it = self.tbl_images.item(r, 0)
+            it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        layout.addWidget(self.tbl_images)
+
+        btns = QHBoxLayout(); layout.addLayout(btns)
+        btns.addStretch(1)
+        btn_reset = QPushButton("Standardwerte wiederherstellen")
+        btn_reset.clicked.connect(self._reset_images_defaults)
+        btns.addWidget(btn_reset)
+
+        layout.addStretch(1)
+        self.tab_widget.addTab(tab, "Bildarten")
+        self._load_images_from_settings()
+
+    def _reset_damage_defaults(self):
+        """Setzt Schadenskategorien auf zentrale Defaults (gekürzt auf 5)."""
         try:
             from config_manager import config_manager
             cfg = config_manager.config or {}
             dmg = cfg.get('damage_categories', {})
-            img = cfg.get('image_types', {})
-
-            def _fill(table: QTableWidget, values: list[str]):
-                for r in range(5):
-                    val = values[r] if r < len(values) else ""
-                    item = QTableWidgetItem(val)
-                    table.setItem(r, 0, item)
-
-            _fill(self.tbl_damage_de, (dmg.get('de') or [])[:5])
-            _fill(self.tbl_damage_en, (dmg.get('en') or [])[:5])
-            _fill(self.tbl_img_de, (img.get('de') or [])[:5])
-            _fill(self.tbl_img_en, (img.get('en') or [])[:5])
+            de = (dmg.get('de') or [])[:5]
+            en = (dmg.get('en') or [])[:5]
+            for r in range(5):
+                self.tbl_damage.setItem(r, 1, QTableWidgetItem(de[r] if r < len(de) else ""))
+                self.tbl_damage.setItem(r, 2, QTableWidgetItem(en[r] if r < len(en) else ""))
         except Exception as e:
-            self._log.error("reset_lists_failed", extra={"event": "reset_lists_failed", "error": str(e)})
+            self._log.error("reset_damage_failed", extra={"event": "reset_damage_failed", "error": str(e)})
 
-    def _load_lists_from_settings(self):
+    def _reset_images_defaults(self):
+        try:
+            from config_manager import config_manager
+            cfg = config_manager.config or {}
+            img = cfg.get('image_types', {})
+            de = (img.get('de') or [])[:5]
+            en = (img.get('en') or [])[:5]
+            for r in range(5):
+                self.tbl_images.setItem(r, 1, QTableWidgetItem(de[r] if r < len(de) else ""))
+                self.tbl_images.setItem(r, 2, QTableWidgetItem(en[r] if r < len(en) else ""))
+        except Exception as e:
+            self._log.error("reset_images_failed", extra={"event": "reset_images_failed", "error": str(e)})
+
+    def _load_damage_from_settings(self):
         try:
             from .settings_manager import get_settings_manager
             sm = get_settings_manager()
-
-            def _fill_from_key(table: QTableWidget, key: str):
-                vals = sm.get(key, []) or []
-                for r in range(5):
-                    txt = vals[r] if r < len(vals) else ""
-                    table.setItem(r, 0, QTableWidgetItem(txt))
-
-            _fill_from_key(self.tbl_damage_de, 'damage_categories_de')
-            _fill_from_key(self.tbl_damage_en, 'damage_categories_en')
-            _fill_from_key(self.tbl_img_de, 'image_types_de')
-            _fill_from_key(self.tbl_img_en, 'image_types_en')
+            de = sm.get('damage_categories_de', []) or []
+            en = sm.get('damage_categories_en', []) or []
+            for r in range(5):
+                self.tbl_damage.setItem(r, 1, QTableWidgetItem(de[r] if r < len(de) else ""))
+                self.tbl_damage.setItem(r, 2, QTableWidgetItem(en[r] if r < len(en) else ""))
         except Exception as e:
-            self._log.error("load_lists_failed", extra={"event": "load_lists_failed", "error": str(e)})
+            self._log.error("load_damage_failed", extra={"event": "load_damage_failed", "error": str(e)})
+
+    def _load_images_from_settings(self):
+        try:
+            from .settings_manager import get_settings_manager
+            sm = get_settings_manager()
+            de = sm.get('image_types_de', []) or []
+            en = sm.get('image_types_en', []) or []
+            for r in range(5):
+                self.tbl_images.setItem(r, 1, QTableWidgetItem(de[r] if r < len(de) else ""))
+                self.tbl_images.setItem(r, 2, QTableWidgetItem(en[r] if r < len(en) else ""))
+        except Exception as e:
+            self._log.error("load_images_failed", extra={"event": "load_images_failed", "error": str(e)})
     
     def _load_default_kurzel(self):
         """Lädt die Standard-Kürzel aus den Einstellungen"""
@@ -710,17 +734,7 @@ class SettingsDialog(QDialog):
         self.zoom_factor_spin.setValue(zoom_factor)
         
         # Crop-Einstellungen
-        crop_x = settings_manager.get("crop_x", 100)
-        self.crop_x_spin.setValue(crop_x)
-        
-        crop_y = settings_manager.get("crop_y", 50)
-        self.crop_y_spin.setValue(crop_y)
-        
-        crop_w = settings_manager.get("crop_w", 200)
-        self.crop_w_spin.setValue(crop_w)
-        
-        crop_h = settings_manager.get("crop_h", 100)
-        self.crop_h_spin.setValue(crop_h)
+        # Crop-Out Einstellungen entfernt
         
         # Kürzel-Tabelle laden
         kurzel_table = settings_manager.get("kurzel_table", {})
@@ -770,11 +784,7 @@ class SettingsDialog(QDialog):
         settings_manager.set("image_quality", self.image_quality_spin.value())
         settings_manager.set("zoom_factor", self.zoom_factor_spin.value())
         
-        # Crop-Einstellungen
-        settings_manager.set("crop_x", self.crop_x_spin.value())
-        settings_manager.set("crop_y", self.crop_y_spin.value())
-        settings_manager.set("crop_w", self.crop_w_spin.value())
-        settings_manager.set("crop_h", self.crop_h_spin.value())
+        # Crop-Einstellungen entfernt
         
         # Kürzel-Tabelle speichern
         kurzel_table = {}
@@ -800,19 +810,19 @@ class SettingsDialog(QDialog):
         
         # Mehrsprachige 5-Punkte-Listen (Schäden/Bildarten) speichern
         try:
-            def _collect5(table: QTableWidget):
+            def _collect5_col(table: QTableWidget, col: int):
                 vals = []
                 for r in range(5):
-                    it = table.item(r, 0)
+                    it = table.item(r, col)
                     vals.append(it.text().strip() if it and it.text() else "")
                 while vals and not vals[-1]:
                     vals.pop()
                 return vals
 
-            dmg_de = _collect5(self.tbl_damage_de)
-            dmg_en = _collect5(self.tbl_damage_en)
-            img_de = _collect5(self.tbl_img_de)
-            img_en = _collect5(self.tbl_img_en)
+            dmg_de = _collect5_col(self.tbl_damage, 1)
+            dmg_en = _collect5_col(self.tbl_damage, 2)
+            img_de = _collect5_col(self.tbl_images, 1)
+            img_en = _collect5_col(self.tbl_images, 2)
 
             if dmg_de:
                 settings_manager.set("damage_categories_de", dmg_de)
@@ -862,11 +872,7 @@ class SettingsDialog(QDialog):
             "thumb_size": self.thumb_size_spin.value(),
             "thumb_quality": self.thumb_quality_spin.value(),
             "image_quality": self.image_quality_spin.value(),
-            "zoom_factor": self.zoom_factor_spin.value(),
-            "crop_x": self.crop_x_spin.value(),
-            "crop_y": self.crop_y_spin.value(),
-            "crop_w": self.crop_w_spin.value(),
-            "crop_h": self.crop_h_spin.value()
+            "zoom_factor": self.zoom_factor_spin.value()
         }
         
         self.settingsChanged.emit(settings_dict)
@@ -902,9 +908,5 @@ class SettingsDialog(QDialog):
             "thumb_quality": self.thumb_quality_spin.value(),
             "image_quality": self.image_quality_spin.value(),
             "zoom_factor": self.zoom_factor_spin.value(),
-            "crop_x": self.crop_x_spin.value(),
-            "crop_y": self.crop_y_spin.value(),
-            "crop_w": self.crop_w_spin.value(),
-            "crop_h": self.crop_h_spin.value(),
             "valid_kurzel": valid_kurzel
         }
