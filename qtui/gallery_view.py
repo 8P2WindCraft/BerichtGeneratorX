@@ -101,6 +101,11 @@ class GalleryView(QWidget):
         toolbar.addWidget(self.search_field)
         
         toolbar.addStretch()
+        # Debug-Overlay Toggle
+        self.debug_toggle = QCheckBox("Debug")
+        self.debug_toggle.toggled.connect(self._toggle_debug_overlay)
+        toolbar.addWidget(self.debug_toggle)
+
 
         # Layout-Auswahl (2x2, 3x3, 4x4, Auto-Fit)
         toolbar.addWidget(QLabel("Layout:"))
@@ -127,6 +132,11 @@ class GalleryView(QWidget):
         self.grid.setHorizontalSpacing(8)
         self.grid.setVerticalSpacing(8)
         gallery_layout.addWidget(self.area, 1)
+        from PySide6.QtWidgets import QLabel
+        self._debug_label = QLabel(self.area.viewport())
+        self._debug_label.setStyleSheet("background-color: rgba(0,0,0,140); color: white;padding: 6px; border-radius: 6px; font-family: Consolas, monospace; font-size: 9pt;")
+        self._debug_label.setVisible(False)
+
 
         # Rechte Sidebar: Bewertungs-Panel
         self._create_evaluation_sidebar()
@@ -154,6 +164,8 @@ class GalleryView(QWidget):
         self.btn_open.clicked.connect(self._open_folder)
         # Erste Layout-Berechnung
         self._recalculate_layout()
+        self._update_debug_overlay()
+
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -442,6 +454,31 @@ class GalleryView(QWidget):
         self.refresh_item(self._current_selected_path)
         self._log.info("quick_evaluation_saved", extra={"path": self._current_selected_path})
 
+    def _toggle_debug_overlay(self, enabled: bool):
+        self._debug_label.setVisible(bool(enabled))
+        if enabled:
+            self._update_debug_overlay()
+
+    def _update_debug_overlay(self):
+        if not self._debug_label.isVisible():
+            return
+        try:
+            vp = self.area.viewport().size()
+            wv, hv = max(1, vp.width()), max(1, vp.height())
+            tw, th = self._thumb_size
+            txt = (f"Grid: {self._rows} x {self._cols}\n"
+                   f"Thumb: {tw} x {th}px\n"
+                   f"Viewport: {wv} x {hv}px\n"
+                   f"Items/Page: {self._items_per_page}  Page: {self._current_page}/{self.page_spin.maximum()}\n"
+                   f"Mode: {"auto" if self._grid_mode=="auto" else str(self._grid_mode)}")
+            self._debug_label.setText(txt)
+            self._debug_label.adjustSize()
+            x = max(0, self.area.viewport().width() - self._debug_label.width() - 8)
+            y = max(0, self.area.viewport().height() - self._debug_label.height() - 8)
+            self._debug_label.move(x, y)
+        except Exception:
+            pass
+
     def _render_grid(self):
         # clear
         while self.grid.count():
@@ -474,8 +511,7 @@ class GalleryView(QWidget):
             self._path_to_label[path] = lbl
 
         # Start incremental loader
-        self._loader.start(10)  # alle 10ms ein Chunk
-
+        self._loader.start(10)  # alle 10ms ein Chunk\n        self._update_debug_overlay()\n
 
     def refresh_layout_from_settings(self):
         """Wendet geanderte Anzeige-/Thumbnail-Settings an (z. B. thumb_size)."""
@@ -697,5 +733,6 @@ class GalleryView(QWidget):
         except Exception:
             pass
         self.imageSelected.emit(path)
+
 
 
