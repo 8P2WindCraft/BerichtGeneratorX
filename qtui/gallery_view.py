@@ -476,6 +476,13 @@ class GalleryView(QWidget):
         # Start incremental loader
         self._loader.start(10)  # alle 10ms ein Chunk
 
+
+    def refresh_layout_from_settings(self):
+        """Wendet geänderte Anzeige-/Thumbnail-Settings an (z. B. thumb_size)."""
+        self._recalculate_layout()
+        self._update_pagination()
+        self._render_grid()
+
     def _load_chunk(self):
         if self._pending_idx >= len(self._labels):
             self._loader.stop()

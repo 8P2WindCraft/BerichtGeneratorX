@@ -479,5 +479,10 @@ class MainWindow(QMainWindow):
     
     def _update_thumbnail_settings(self):
         """Thumbnail-Einstellungen aktualisieren"""
-        # Diese Methode wird von der Gallery implementiert
+        try:
+            if hasattr(self, 'gallery') and hasattr(self.gallery, 'refresh_layout_from_settings'):
+                self.gallery.refresh_layout_from_settings()
+        except Exception:
+            pass
+
         pass
