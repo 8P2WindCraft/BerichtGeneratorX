@@ -478,7 +478,7 @@ class GalleryView(QWidget):
 
 
     def refresh_layout_from_settings(self):
-        """Wendet geänderte Anzeige-/Thumbnail-Settings an (z. B. thumb_size)."""
+        """Wendet geanderte Anzeige-/Thumbnail-Settings an (z. B. thumb_size)."""
         self._recalculate_layout()
         self._update_pagination()
         self._render_grid()
@@ -497,7 +497,7 @@ class GalleryView(QWidget):
             if pix is None:
                 p = QPixmap(path)
                 if not p.isNull():
-                    pix = p.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    pix = p.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
                     self._cache[path] = pix
             if pix is not None:
                 # Badge mit OCR-Tag (falls vorhanden)
@@ -603,7 +603,7 @@ class GalleryView(QWidget):
             w, h = self._thumb_size
             p = QPixmap(path)
             if not p.isNull():
-                pix = p.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pix = p.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
                 self._cache[path] = pix
                 # Badge ggf. anbringen (wie im Loader)
                 info = {}
@@ -697,4 +697,5 @@ class GalleryView(QWidget):
         except Exception:
             pass
         self.imageSelected.emit(path)
+
 
