@@ -471,7 +471,7 @@ class DarkTheme(Theme):
         self.secondary = "#161b22"
         self.accent = "#58a6ff"
         self.border = "#30363d"
-        self.hover = "#21262d"
+        self.hover = "#252b35"
         self.pressed = "#30363d"
         self.selected = "#1f2a35"
         self.disabled = "#484f58"
@@ -485,8 +485,9 @@ class DarkTheme(Theme):
         self.input_bg = "#0d1117"
         self.input_fg = "#e6edf3"
         self.input_border = "#30363d"
-        self.button_bg = "#21262d"
-        self.button_fg = "#e6edf3"
+        # Chiplets dunkler für bessere Integration in Dark Mode
+        self.button_bg = "#1c2128"
+        self.button_fg = "#c9d1d9"
         self.button_border = "#30363d"
 
 

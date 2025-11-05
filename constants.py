@@ -122,10 +122,10 @@ class DetectParams:
     min_aspect: float = 0.8       # Etwas breiter als hoch erlaubt
     max_aspect: float = 4.0       # Bis zu 4x breiter als hoch
 
-    padding_top: int = -2
-    padding_bottom: int = -2
-    padding_left: int = -2
-    padding_right: int = -2
+    padding_top: int = 0
+    padding_bottom: int = 0
+    padding_left: int = 0
+    padding_right: int = 0
 
     enable_post_processing: bool = True
 

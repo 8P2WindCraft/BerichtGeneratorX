@@ -11,6 +11,7 @@ import os
 import json
 from datetime import datetime
 from utils_helpers import resource_path
+from utils_logging import get_logger
 from core_kurzel import KurzelTableManager
 
 
@@ -26,6 +27,10 @@ class CentralConfigManager:
         self.config_file = JSON_CONFIG_FILE
         self.config = self.load_config()
         self.kurzel_table_manager = KurzelTableManager(self)
+        try:
+            get_logger('app', {"module": "config_manager"}).info("module_started", extra={"event": "module_started"})
+        except Exception:
+            pass
         
     def load_config(self):
         """Lädt die zentrale Konfiguration"""
@@ -33,13 +38,19 @@ class CentralConfigManager:
             try:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    print(f"Zentrale Konfiguration geladen: {self.config_file}")
+                    try:
+                        get_logger('app', {"module": "config_manager"}).info("Konfiguration geladen", extra={"event": "config_loaded", "path": self.config_file})
+                    except Exception:
+                        print(f"Zentrale Konfiguration geladen: {self.config_file}")
                     cfg = self._migrate_config(config)
                     # Sicherstellen, dass kurzel_table vorhanden ist
                     self._ensure_kurzel_table(cfg)
                     return cfg
             except Exception as e:
-                print(f"Fehler beim Laden der Konfiguration {self.config_file}: {e}")
+                try:
+                    get_logger('app', {"module": "config_manager"}).exception("Fehler beim Laden der Konfiguration", extra={"event": "config_load_error", "path": self.config_file})
+                except Exception:
+                    print(f"Fehler beim Laden der Konfiguration {self.config_file}: {e}")
                 # Versuche tolerantes Parsen, falls z.B. Zusatzdaten angehängt wurden
                 try:
                     with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -77,11 +88,17 @@ class CentralConfigManager:
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
-            print(f"Zentrale Konfiguration gespeichert: {self.config_file}")
+            try:
+                get_logger('app', {"module": "config_manager"}).info("Konfiguration gespeichert", extra={"event": "config_saved", "path": self.config_file})
+            except Exception:
+                print(f"Zentrale Konfiguration gespeichert: {self.config_file}")
             self.config = config
             return True
         except Exception as e:
-            print(f"Fehler beim Speichern der Konfiguration {self.config_file}: {e}")
+            try:
+                get_logger('app', {"module": "config_manager"}).exception("Fehler beim Speichern der Konfiguration", extra={"event": "config_save_error", "path": self.config_file})
+            except Exception:
+                print(f"Fehler beim Speichern der Konfiguration {self.config_file}: {e}")
             return False
     
     def _get_default_config(self):

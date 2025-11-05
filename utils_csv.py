@@ -6,7 +6,8 @@ CSV-bezogene Funktionen
 
 import os
 from constants import MAX_CSV_TEST_LINES
-from utils_logging import logger
+from utils_logging import get_logger
+logger = get_logger('app', {"module": "utils_csv"})
 
 
 def detect_csv_encoding(file_path):

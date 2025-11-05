@@ -7,12 +7,13 @@ from PySide6.QtWidgets import QWidget, QPushButton, QHBoxLayout
 class ToggleSwitch(QWidget):
     toggled = Signal(bool)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, active_color="#4CAF50"):
         super().__init__(parent)
         self.setFixedSize(52, 30)
         self.setCursor(Qt.PointingHandCursor)
         self._checked = False
         self._pos = 0.0
+        self._active_color = active_color  # Konfigurierbare Farbe
         # Wichtig: nicht "pos" animieren (würde die Widget-Position ändern)
         self._anim = QPropertyAnimation(self, b"offset", self)
         self._anim.setDuration(150)
@@ -39,7 +40,8 @@ class ToggleSwitch(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         track = QRectF(0, 0, 52, 30)
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(QColor("#4CAF50") if self._checked else QColor("#CCCCCC")))
+        # Verwende konfigurierbare Farbe wenn aktiviert
+        p.setBrush(QBrush(QColor(self._active_color) if self._checked else QColor("#CCCCCC")))
         p.drawRoundedRect(track, 15, 15)
         d = 26
         x = 2 + (50 - d) * self._pos

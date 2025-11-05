@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QApplication
 from utils_logging import get_logger
 import json
 import os
+import ast
 
 
 class SettingsManager(QObject):
@@ -23,6 +24,14 @@ class SettingsManager(QObject):
         self.defaults = {
             "dark_mode": False,  # Dark Mode standardmäßig aus
             "language": "Deutsch",
+            # Zeige im Bild-Overlay nur den reinen OCR-Tag (Standard: False)
+            # Wenn True, wird zusätzlich die Überschrift aus der Kürzel-Tabelle angezeigt
+            "tag_overlay_heading": False,
+            # Reihenfolge der Anzeige: 'below' = Code dann Überschrift, 'above' = Überschrift dann Code
+            "tag_heading_order": "below",
+            # Which language to normalize metadata to when saving
+            # Values: "UI" (follow current UI language), "de", "en"
+            "metadata_language": "UI",
             "last_folder": "",
             "auto_save": True,
             "save_interval": 5,
@@ -129,6 +138,55 @@ class SettingsManager(QObject):
                 'PL1-2', 'PLB1G-2', 'PLB1R-2', 'PL1-3', 'PLB1G-3', 'PLB1R-3',
                 'PL1-4', 'PLB1G-4', 'PLB1R-4'
             ],
+
+            # Bereichs-Reihenfolge für die Vorschau/Gliederung
+            "section_order": [
+                "Planetenstufe 1",
+                "Planetenstufe 2",
+                "Planetenstufe 3",
+                "Low Speed Shaft",
+                "High Speed Shaft"
+            ],
+
+            # Überschriften zweisprachig (gleiche Reihenfolge wie section_order)
+            "section_titles_de": [
+                "Planetenstufe 1",
+                "Planetenstufe 2",
+                "Planetenstufe 3",
+                "Niedriggeschwindigkeitswelle",
+                "Hochgeschwindigkeitswelle"
+            ],
+            "section_titles_en": [
+                "Planetary Stage 1",
+                "Planetary Stage 2",
+                "Planetary Stage 3",
+                "Low Speed Shaft",
+                "High Speed Shaft"
+            ],
+
+            # Zuordnung: Bereich -> Liste der zugehörigen Kürzel
+            "section_kurzel_map": {
+                "Planetenstufe 1": [
+                    "PLC1G", "PLC1R", "RG1", "SUN1",
+                    "PL1-1", "PLB1G-1", "PLB1R-1",
+                    "PL1-2", "PLB1G-2", "PLB1R-2",
+                    "PL1-3", "PLB1G-3", "PLB1R-3",
+                    "PL1-4", "PLB1G-4", "PLB1R-4"
+                ],
+                "Planetenstufe 2": [
+                    "PLC2GR", "PLC2GG", "PLC2R", "RG2", "SUN2",
+                    "PL2-1", "PLB2G-1", "PLB2R-1",
+                    "PL2-2", "PLB2G-2", "PLB2R-2",
+                    "PL2-3", "PLB2G-3", "PLB2R-3"
+                ],
+                "Planetenstufe 3": [],
+                "Low Speed Shaft": ["LSS", "LSSR", "LSSGR", "LSSGG"],
+                "High Speed Shaft": [
+                    "HSS", "HSSR", "HSSGR", "HSSGG",
+                    "HS0", "HS1", "HS2", "HS3", "HS4",
+                    "HS5", "HS6", "HS7", "HS8", "HS9"
+                ]
+            },
             
             # Alternative Kürzel (aus dem alten Programm)
             "alternative_kurzel": {
@@ -241,6 +299,15 @@ class SettingsManager(QObject):
             "last_selections_excel_file": "",
             "last_selections_analyze_folder": "",
             "last_selections_exif_folder": "",
+
+            # Cover-Bildverwaltung
+            "cover_tags": [
+                "Getriebeansicht",
+                "Ölansicht",
+                "Ölstabansicht"
+            ],
+            "cover_images": {},
+            "cover_last_folder": "",
             
             # Tag-Management
             "tag_management_auto_update_tags": True,
@@ -264,7 +331,8 @@ class SettingsManager(QObject):
         for key, default_value in self.defaults.items():
             # QSettings kann keine komplexen Typen (list, dict) direkt laden
             if isinstance(default_value, (list, dict)):
-                self._cache[key] = self.settings.value(key, default_value)
+                raw = self.settings.value(key, default_value)
+                self._cache[key] = self._normalize_value(raw, default_value)
             elif isinstance(default_value, bool):
                 # Bool muss explizit konvertiert werden
                 val = self.settings.value(key, default_value)
@@ -385,11 +453,35 @@ class SettingsManager(QObject):
     
     def get_language_specific_list(self, list_type):
         """Holt eine sprachspezifische Liste basierend auf der aktuellen Sprache"""
-        language = self.get("localization_current_language", "en")
-        key = f"{list_type}_{language}"
-        
-        # Fallback auf die aktuelle Liste, falls sprachspezifische nicht existiert
-        return self.get(key, self.get(list_type, []))
+        language = (self.get("language", "Deutsch") or "Deutsch").lower()
+        suffix = "de" if language.startswith("deutsch") else "en"
+        key = f"{list_type}_{suffix}"
+
+        defaults = self._normalize_list_value(self.defaults.get(key, []))
+        stored = self._normalize_list_value(self.get(key, []))
+        combined = self._merge_defaults(defaults, stored)
+        if combined != stored:
+            self.set(key, combined)
+
+        # auch generische Liste synchronisieren
+        generic_defaults = self._normalize_list_value(self.defaults.get(list_type, []))
+        generic_stored = self._normalize_list_value(self.get(list_type, []))
+        generic_combined = self._merge_defaults(generic_defaults, combined)
+        if generic_combined != generic_stored:
+            self.set(list_type, generic_combined)
+
+        return combined
+
+    # Target language for normalizing metadata stored into EXIF JSON
+    def get_metadata_target_lang(self) -> str:
+        """Returns 'de' or 'en' based on preference/settings."""
+        pref = str(self.get("metadata_language", "UI") or "UI").strip().lower()
+        if pref in {"ui", "auto"}:
+            lang = str(self.get("language", "Deutsch") or "Deutsch").strip().lower()
+            return 'de' if lang.startswith('de') else 'en'
+        if pref in {"de", "deutsch", "german"}:
+            return 'de'
+        return 'en'
     
     def get_damage_categories(self):
         """Holt die Schadenskategorien für die aktuelle Sprache"""
@@ -406,6 +498,181 @@ class SettingsManager(QObject):
     def get_use_image_options(self):
         """Holt die 'Bild verwenden'-Optionen für die aktuelle Sprache"""
         return self.get_language_specific_list("use_image_options")
+
+    # ------------------------------------------------------------------
+    # Normalisierungshilfen
+    def _normalize_value(self, value, default):
+        if isinstance(default, list):
+            return self._normalize_list_value(value if value is not None else default)
+        if isinstance(default, dict):
+            return self._normalize_dict_value(value if value is not None else default)
+        return value if value is not None else default
+
+    def _normalize_list_value(self, value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [self._ensure_text(item) for item in value if self._ensure_text(item)]
+        if isinstance(value, tuple):
+            return self._normalize_list_value(list(value))
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    parsed = parser(text)
+                    return self._normalize_list_value(parsed)
+                except Exception:
+                    continue
+            if ',' in text:
+                return [part.strip() for part in text.split(',') if part.strip()]
+            return [text]
+        return [self._ensure_text(value)] if self._ensure_text(value) else []
+
+    def _normalize_dict_value(self, value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    parsed = parser(text)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    continue
+        return {}
+
+    @staticmethod
+    def _ensure_text(value):
+        if isinstance(value, str):
+            return value.strip()
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _merge_defaults(defaults, current):
+        seen = set()
+        merged = []
+        for source in (current, defaults):
+            for item in source:
+                if not isinstance(item, str):
+                    item = str(item)
+                trimmed = item.strip()
+                if not trimmed:
+                    continue
+                key = trimmed.lower()
+                if key in seen:
+                    continue
+                merged.append(trimmed)
+                seen.add(key)
+        return merged
+
+    # Cover-Bild Convenience
+    def get_cover_tags(self):
+        tags = self.get("cover_tags", []) or []
+        cleaned = []
+        seen = set()
+        for tag in tags:
+            if not isinstance(tag, str):
+                continue
+            trimmed = tag.strip()
+            if not trimmed:
+                continue
+            if trimmed.lower() in seen:
+                continue
+            cleaned.append(trimmed)
+            seen.add(trimmed.lower())
+        if cleaned != tags:
+            self.set("cover_tags", cleaned)
+        return cleaned
+
+    def set_cover_tags(self, tags):
+        cleaned = []
+        seen = set()
+        for tag in tags or []:
+            if not isinstance(tag, str):
+                continue
+            trimmed = tag.strip()
+            if not trimmed:
+                continue
+            key = trimmed.lower()
+            if key in seen:
+                continue
+            cleaned.append(trimmed)
+            seen.add(key)
+        self.set("cover_tags", cleaned)
+        return cleaned
+
+    def add_cover_tag(self, tag: str):
+        tags = self.get_cover_tags()
+        if not isinstance(tag, str):
+            return tags
+        trimmed = tag.strip()
+        if not trimmed:
+            return tags
+        if trimmed.lower() not in {t.lower() for t in tags}:
+            tags.append(trimmed)
+            self.set("cover_tags", tags)
+        return tags
+
+    def remove_cover_tag(self, tag: str):
+        if not isinstance(tag, str):
+            return self.get_cover_tags()
+        tags = [t for t in self.get_cover_tags() if t.lower() != tag.strip().lower()]
+        self.set("cover_tags", tags)
+        return tags
+
+    def get_cover_images(self):
+        data = self.get("cover_images", {}) or {}
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for path, entry in data.items():
+            if not isinstance(path, str) or not isinstance(entry, dict):
+                continue
+            out[path] = entry.copy()
+        if out != data:
+            self.set("cover_images", out)
+        return out
+
+    def get_cover_image_data(self, image_path: str):
+        if not isinstance(image_path, str) or not image_path:
+            return {}
+        return self.get_cover_images().get(image_path, {}).copy()
+
+    def set_cover_image_data(self, image_path: str, data: dict | None):
+        if not isinstance(image_path, str) or not image_path:
+            return self.get_cover_images()
+        images = self.get_cover_images()
+        if data and isinstance(data, dict):
+            images[image_path] = data.copy()
+        else:
+            images.pop(image_path, None)
+        self.set("cover_images", images)
+        return images
+
+    def clear_cover_image(self, image_path: str):
+        if not isinstance(image_path, str) or not image_path:
+            return False
+        images = self.get_cover_images()
+        removed = images.pop(image_path, None) is not None
+        if removed:
+            self.set("cover_images", images)
+        return removed
+
+    def get_cover_last_folder(self):
+        return self.get("cover_last_folder", "") or ""
+
+    def set_cover_last_folder(self, folder: str):
+        if folder is None:
+            folder = ""
+        self.set("cover_last_folder", str(folder))
+        return folder
     
     def switch_language(self, language: str):
         """Wechselt die Sprache und aktualisiert alle sprachabhängigen Listen"""

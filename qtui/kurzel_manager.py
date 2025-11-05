@@ -69,7 +69,9 @@ class KurzelManagerDialog(QDialog):
         button_layout.addWidget(self.btn_export_json)
         button_layout.addStretch()
         
+        self.btn_save = QPushButton("Speichern")
         self.btn_close = QPushButton("Schließen")
+        button_layout.addWidget(self.btn_save)
         button_layout.addWidget(self.btn_close)
         
         layout.addLayout(button_layout)
@@ -79,6 +81,7 @@ class KurzelManagerDialog(QDialog):
         self.btn_export_csv.clicked.connect(self._export_csv)
         self.btn_import_json.clicked.connect(self._import_json)
         self.btn_export_json.clicked.connect(self._export_json)
+        self.btn_save.clicked.connect(self._save_changes)
         self.btn_close.clicked.connect(self.accept)
         
     def _create_kurzel_table_tab(self):
@@ -104,30 +107,31 @@ class KurzelManagerDialog(QDialog):
         
         # Kürzel-Tabelle
         self.kurzel_table = QTableWidget()
-        self.kurzel_table.setColumnCount(8)
+        self.kurzel_table.setColumnCount(10)
         self.kurzel_table.setHorizontalHeaderLabels([
             "Kürzel", "Name (DE)", "Name (EN)", "Kategorie", 
-            "Bildart", "Beschreibung (DE)", "Beschreibung (EN)", "Aktiv"
+            "Bildart", "Beschreibung (DE)", "Beschreibung (EN)", "Reihenfolge", "Häufigkeit", "Aktiv"
         ])
         
         # Spaltenbreiten setzen
         header = self.kurzel_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Fixed)  # Kürzel
-        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Name DE
-        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Name EN
-        header.setSectionResizeMode(3, QHeaderView.Fixed)    # Kategorie
-        header.setSectionResizeMode(4, QHeaderView.Fixed)   # Bildart
-        header.setSectionResizeMode(5, QHeaderView.Stretch) # Beschreibung DE
-        header.setSectionResizeMode(6, QHeaderView.Stretch) # Beschreibung EN
-        header.setSectionResizeMode(7, QHeaderView.Fixed)   # Aktiv
+        header.setSectionResizeMode(QHeaderView.Interactive)
         
         self.kurzel_table.setColumnWidth(0, 80)   # Kürzel
         self.kurzel_table.setColumnWidth(3, 100)  # Kategorie
         self.kurzel_table.setColumnWidth(4, 120)  # Bildart
-        self.kurzel_table.setColumnWidth(7, 60)   # Aktiv
+        self.kurzel_table.setColumnWidth(7, 80)   # Reihenfolge
+        self.kurzel_table.setColumnWidth(8, 80)   # Häufigkeit
+        self.kurzel_table.setColumnWidth(9, 60)   # Aktiv
+        
+        # Tabelle editierbar machen
+        self.kurzel_table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.SelectedClicked)
         
         # Doppelklick für Bearbeitung
         self.kurzel_table.itemDoubleClicked.connect(self._edit_selected_kurzel)
+        
+        # Direkte Änderungen speichern
+        self.kurzel_table.itemChanged.connect(self._on_kurzel_table_item_changed)
         
         layout.addWidget(self.kurzel_table)
         
@@ -155,8 +159,7 @@ class KurzelManagerDialog(QDialog):
         self.alt_kurzel_table.setHorizontalHeaderLabels(["Original Kürzel", "Alternative Schreibweise"])
         
         header = self.alt_kurzel_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(QHeaderView.Interactive)
         
         layout.addWidget(self.alt_kurzel_table)
         
@@ -192,9 +195,7 @@ class KurzelManagerDialog(QDialog):
         self.categories_list.setHorizontalHeaderLabels(["Kategorie", "Beschreibung", "Anzahl Kürzel"])
         
         header = self.categories_list.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.setSectionResizeMode(QHeaderView.Interactive)
         self.categories_list.setColumnWidth(2, 100)
         
         categories_layout.addWidget(self.categories_list)
@@ -222,10 +223,26 @@ class KurzelManagerDialog(QDialog):
         
     def _load_kurzel_data(self):
         """Lädt die Kürzel-Daten in die Tabelle"""
-        self.kurzel_data = self.settings_manager.get('kurzel_table', {})
+        # Nur beim ersten Laden: lade aus Settings
+        if not hasattr(self, '_initialized') or not self._initialized:
+            self.kurzel_data = self.settings_manager.get('kurzel_table', {})
+        else:
+            # Beim Refresh: reload aus Settings falls nötig
+            loaded_data = self.settings_manager.get('kurzel_table', {})
+            # Nur überschreiben wenn Settings mehr Einträge haben (extern geändert)
+            if len(loaded_data) > len(self.kurzel_data):
+                self.kurzel_data = loaded_data
+        
+        self._initialized = True
+        
+        # Blockiere itemChanged während des Ladens
+        self.kurzel_table.blockSignals(True)
         
         # Tabelle leeren
         self.kurzel_table.setRowCount(0)
+        
+        # Mapping: Zeile -> Kürzel-Code (für schnelleren Lookup)
+        self._row_to_kurzel = {}
         
         # Daten laden
         for kurzel_code, data in self.kurzel_data.items():
@@ -253,11 +270,23 @@ class KurzelManagerDialog(QDialog):
             # Beschreibung EN
             self.kurzel_table.setItem(row, 6, QTableWidgetItem(data.get('description_en', '')))
             
+            # Reihenfolge
+            self.kurzel_table.setItem(row, 7, QTableWidgetItem(str(data.get('order', 0))))
+            
+            # Häufigkeit
+            self.kurzel_table.setItem(row, 8, QTableWidgetItem(str(data.get('frequency', 0))))
+            
             # Aktiv (Checkbox)
             active_item = QTableWidgetItem()
             active_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             active_item.setCheckState(Qt.Checked if data.get('active', True) else Qt.Unchecked)
-            self.kurzel_table.setItem(row, 7, active_item)
+            self.kurzel_table.setItem(row, 9, active_item)
+            
+            # Speichere Zeilen-Mapping
+            self._row_to_kurzel[row] = kurzel_code
+        
+        # Entsperre Signale nach dem Laden
+        self.kurzel_table.blockSignals(False)
         
         # Alternative Kürzel laden
         self._load_alternative_kurzel()
@@ -296,6 +325,62 @@ class KurzelManagerDialog(QDialog):
             self.categories_list.setItem(row, 1, QTableWidgetItem(cat_data.get('description', '')))
             self.categories_list.setItem(row, 2, QTableWidgetItem(str(count)))
             
+    def _on_kurzel_table_item_changed(self, item: QTableWidgetItem):
+        """Wird aufgerufen wenn ein Item in der Tabelle geändert wird - speichert automatisch"""
+        if not item:
+            return
+        
+        row = item.row()
+        column = item.column()
+        
+        # Hole ursprünglichen Kürzel-Code aus Mapping
+        old_kurzel_code = self._row_to_kurzel.get(row)
+        if not old_kurzel_code or old_kurzel_code not in self.kurzel_data:
+            return
+        
+        # Wenn Kürzel-Code geändert wurde (Spalte 0)
+        if column == 0:
+            new_code = item.text().strip()
+            if new_code and new_code != old_kurzel_code:
+                # Neues Kürzel anlegen mit alten Daten
+                if new_code not in self.kurzel_data:
+                    self.kurzel_data[new_code] = self.kurzel_data[old_kurzel_code].copy()
+                    del self.kurzel_data[old_kurzel_code]
+                    # Update Mapping
+                    self._row_to_kurzel[row] = new_code
+        else:
+            # Andere Felder aktualisieren
+            kurzel_code = old_kurzel_code  # Verwende gemappten Code
+            if kurzel_code in self.kurzel_data:
+                # Mappe Spalte zu Feld
+                field_map = {
+                    1: 'name_de',
+                    2: 'name_en',
+                    3: 'category',
+                    4: 'image_type',
+                    5: 'description_de',
+                    6: 'description_en',
+                    7: 'order',
+                    8: 'frequency',
+                    9: 'active'
+                }
+                
+                field = field_map.get(column)
+                if field:
+                    if column == 9:  # Aktiv-Checkbox
+                        self.kurzel_data[kurzel_code][field] = item.checkState() == Qt.Checked
+                    elif column in (7, 8):  # Reihenfolge, Häufigkeit (integer)
+                        try:
+                            self.kurzel_data[kurzel_code][field] = int(item.text())
+                        except ValueError:
+                            self.kurzel_data[kurzel_code][field] = 0
+                    else:
+                        self.kurzel_data[kurzel_code][field] = item.text()
+        
+        # Automatisch speichern
+        self.settings_manager.set('kurzel_table', self.kurzel_data)
+        self.kurzelChanged.emit()
+    
     def _add_new_kurzel(self):
         """Öffnet Dialog für neues Kürzel"""
         dialog = KurzelEditDialog(self)
@@ -466,9 +551,21 @@ class KurzelManagerDialog(QDialog):
         try:
             imported_count = 0
             with open(file_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
+                # Semikolon als Trennzeichen für deutsche CSV
+                reader = csv.DictReader(f, delimiter=';')
                 for row in reader:
                     if 'kurzel_code' in row and row['kurzel_code']:
+                        # Parse order und frequency als Integer
+                        try:
+                            order = int(row.get('order', 0))
+                        except (ValueError, TypeError):
+                            order = 0
+                        
+                        try:
+                            frequency = int(row.get('frequency', 0))
+                        except (ValueError, TypeError):
+                            frequency = 0
+                        
                         kurzel_data = {
                             'kurzel_code': row['kurzel_code'],
                             'name_de': row.get('name_de', ''),
@@ -477,6 +574,8 @@ class KurzelManagerDialog(QDialog):
                             'image_type': row.get('image_type', ''),
                             'description_de': row.get('description_de', ''),
                             'description_en': row.get('description_en', ''),
+                            'order': order,
+                            'frequency': frequency,
                             'active': row.get('active', 'true').lower() == 'true',
                             'created_date': datetime.now().isoformat(),
                             'last_modified': datetime.now().isoformat()
@@ -485,8 +584,10 @@ class KurzelManagerDialog(QDialog):
                         self.kurzel_data[row['kurzel_code']] = kurzel_data
                         imported_count += 1
                         
+            # Speichern in settings_manager
             self.settings_manager.set('kurzel_table', self.kurzel_data)
             self._load_kurzel_data()
+            self.kurzelChanged.emit()  # Signal emittieren damit TreeView aktualisiert wird
             
             QMessageBox.information(
                 self, "Import erfolgreich", 
@@ -510,9 +611,11 @@ class KurzelManagerDialog(QDialog):
                 if self.kurzel_data:
                     fieldnames = [
                         'kurzel_code', 'name_de', 'name_en', 'category', 
-                        'image_type', 'description_de', 'description_en', 'active'
+                        'image_type', 'description_de', 'description_en', 'active',
+                        'order', 'frequency', 'created_date', 'last_modified'
                     ]
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    # Semikolon als Trennzeichen für deutsche CSV
+                    writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=';', extrasaction='ignore')
                     writer.writeheader()
                     
                     for kurzel_data in self.kurzel_data.values():
@@ -540,6 +643,7 @@ class KurzelManagerDialog(QDialog):
                 self.kurzel_data.update(imported_data)
                 self.settings_manager.set('kurzel_table', self.kurzel_data)
                 self._load_kurzel_data()
+                self.kurzelChanged.emit()  # Signal emittieren damit TreeView aktualisiert wird
                 
                 QMessageBox.information(
                     self, "Import erfolgreich", 
@@ -551,6 +655,40 @@ class KurzelManagerDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Import fehlgeschlagen", f"Fehler beim Import: {str(e)}")
             
+    def _save_changes(self):
+        """Speichert alle Änderungen explizit"""
+        try:
+            # Speichere Kürzel-Daten
+            self.settings_manager.set('kurzel_table', self.kurzel_data)
+            
+            # Explizite Synchronisation für QSettings
+            self.settings_manager.settings.sync()
+            
+            # Signal emittieren
+            self.kurzelChanged.emit()
+            
+            QMessageBox.information(
+                self, "Gespeichert", 
+                "Alle Änderungen wurden erfolgreich gespeichert."
+            )
+            
+            self._log.info("kurzel_saved", extra={"event": "kurzel_saved", "count": len(self.kurzel_data)})
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Speichern fehlgeschlagen", f"Fehler beim Speichern: {str(e)}")
+            self._log.error("kurzel_save_failed", extra={"event": "kurzel_save_failed", "error": str(e)})
+    
+    def accept(self):
+        """Überschreibt accept() um beim Schließen zu speichern"""
+        # Automatisch speichern beim Schließen
+        try:
+            self.settings_manager.set('kurzel_table', self.kurzel_data)
+            self.settings_manager.settings.sync()
+            self.kurzelChanged.emit()
+        except Exception as e:
+            self._log.error("kurzel_auto_save_failed", extra={"event": "kurzel_auto_save_failed", "error": str(e)})
+        super().accept()
+    
     def _export_json(self):
         """Exportiert Kürzel als JSON-Datei"""
         file_path, _ = QFileDialog.getSaveFileName(
@@ -584,6 +722,14 @@ class KurzelEditDialog(QDialog):
         self._create_ui()
         self._load_data()
         
+    def accept(self):
+        """Überschreibt accept() um beim Schließen zu speichern"""
+        # Automatisch speichern beim Schließen
+        self.settings_manager.set('kurzel_table', self.kurzel_data)
+        self.settings_manager.settings.sync()
+        self.kurzelChanged.emit()
+        super().accept()
+    
     def _get_default_structure(self):
         """Gibt die Standard-Struktur für ein Kürzel zurück"""
         return {
@@ -595,6 +741,8 @@ class KurzelEditDialog(QDialog):
             'description_de': '',
             'description_en': '',
             'active': True,
+            'order': 0,
+            'frequency': 0,
             'created_date': datetime.now().isoformat(),
             'last_modified': datetime.now().isoformat()
         }
@@ -620,6 +768,10 @@ class KurzelEditDialog(QDialog):
         self.description_de_edit.setMaximumHeight(80)
         self.description_en_edit = QTextEdit()
         self.description_en_edit.setMaximumHeight(80)
+        self.order_spinbox = QSpinBox()
+        self.order_spinbox.setRange(0, 9999)
+        self.frequency_spinbox = QSpinBox()
+        self.frequency_spinbox.setRange(0, 9999)
         self.active_checkbox = QCheckBox("Aktiv")
         
         # Kategorien und Bildarten laden
@@ -633,6 +785,8 @@ class KurzelEditDialog(QDialog):
         form_layout.addRow("Bildart:", self.image_type_combo)
         form_layout.addRow("Beschreibung (Deutsch):", self.description_de_edit)
         form_layout.addRow("Beschreibung (Englisch):", self.description_en_edit)
+        form_layout.addRow("Reihenfolge:", self.order_spinbox)
+        form_layout.addRow("Häufigkeit:", self.frequency_spinbox)
         form_layout.addRow("", self.active_checkbox)
         
         scroll.setWidget(form_widget)
@@ -678,15 +832,31 @@ class KurzelEditDialog(QDialog):
             index = self.category_combo.findText(category)
             if index >= 0:
                 self.category_combo.setCurrentIndex(index)
+            else:
+                # Kategorie nicht gefunden - als neues Item hinzufügen
+                self.category_combo.addItem(category)
+                self.category_combo.setCurrentIndex(self.category_combo.count() - 1)
+        else:
+            # Kategorie ist leer - Index 0 setzen (leeres Item)
+            self.category_combo.setCurrentIndex(0)
                 
         image_type = self.kurzel_data.get('image_type', '')
         if image_type:
             index = self.image_type_combo.findText(image_type)
             if index >= 0:
                 self.image_type_combo.setCurrentIndex(index)
+            else:
+                # Bildart nicht gefunden - als neues Item hinzufügen
+                self.image_type_combo.addItem(image_type)
+                self.image_type_combo.setCurrentIndex(self.image_type_combo.count() - 1)
+        else:
+            # Bildart ist leer - Index 0 setzen (leeres Item)
+            self.image_type_combo.setCurrentIndex(0)
                 
         self.description_de_edit.setPlainText(self.kurzel_data.get('description_de', ''))
         self.description_en_edit.setPlainText(self.kurzel_data.get('description_en', ''))
+        self.order_spinbox.setValue(self.kurzel_data.get('order', 0))
+        self.frequency_spinbox.setValue(self.kurzel_data.get('frequency', 0))
         self.active_checkbox.setChecked(self.kurzel_data.get('active', True))
         
     def get_kurzel_data(self):
@@ -695,15 +865,33 @@ class KurzelEditDialog(QDialog):
         if not kurzel_code:
             QMessageBox.warning(self, "Ungültige Eingabe", "Kürzel-Code darf nicht leer sein.")
             return None
+        
+        # Kategorie: Leeres Item (Index 0) bedeutet leere Kategorie
+        category_text = self.category_combo.currentText()
+        if category_text:
+            category = category_text
+        else:
+            # Wenn aktuell Index 0 (leeres Item) und ursprünglich eine Kategorie vorhanden war, diese behalten
+            category = self.kurzel_data.get('category', '')
+        
+        # Bildart: Leeres Item (Index 0) bedeutet leere Bildart
+        image_type_text = self.image_type_combo.currentText()
+        if image_type_text:
+            image_type = image_type_text
+        else:
+            # Wenn aktuell Index 0 (leeres Item) und ursprünglich eine Bildart vorhanden war, diese behalten
+            image_type = self.kurzel_data.get('image_type', '')
             
         return {
             'kurzel_code': kurzel_code,
             'name_de': self.name_de_edit.text().strip(),
             'name_en': self.name_en_edit.text().strip(),
-            'category': self.category_combo.currentText(),
-            'image_type': self.image_type_combo.currentText(),
+            'category': category,
+            'image_type': image_type,
             'description_de': self.description_de_edit.toPlainText().strip(),
             'description_en': self.description_en_edit.toPlainText().strip(),
+            'order': self.order_spinbox.value(),
+            'frequency': self.frequency_spinbox.value(),
             'active': self.active_checkbox.isChecked(),
             'created_date': self.kurzel_data.get('created_date', datetime.now().isoformat()),
             'last_modified': datetime.now().isoformat()
