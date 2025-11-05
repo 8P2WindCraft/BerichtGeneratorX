@@ -129,8 +129,8 @@ def main():
                 m = re.match(r'^PL([12])-(\d)$', code)
                 if m:
                     stage, idx = m.group(1), m.group(2)
-                    name_en = f"Planet Stage {stage} 3 Planet {idx}"
-                    name_de = f"Planet Stufe {stage} 3 Planet {idx}"
+                    name_en = f"Planet Stage {stage} → Planet {idx}"
+                    name_de = f"Planet Stufe {stage} → Planet {idx}"
                     return name_de, name_en
 
                 # Planet Bearing (G/R) fuer Planet n in Stufe 1/2, z.B. PLB1G-2
@@ -139,8 +139,8 @@ def main():
                     stage, side, idx = m.group(1), m.group(2), m.group(3)
                     side_en = 'G side' if side == 'G' else 'R side'
                     side_de = 'Seite G' if side == 'G' else 'Seite R'
-                    name_en = f"Planet Bearing Stage {stage} ({side_en}) 3 Planet {idx}"
-                    name_de = f"Planetenlager Stufe {stage} ({side_de}) 3 Planet {idx}"
+                    name_en = f"Planet Bearing Stage {stage} ({side_en}) → Planet {idx}"
+                    name_de = f"Planetenlager Stufe {stage} ({side_de}) → Planet {idx}"
                     return name_de, name_en
 
                 # HS0..HS9 Fallback

@@ -311,9 +311,9 @@ class CentralConfigManager:
             if c.startswith('LSS'):
                 return 'Low Speed Shaft Stage'
             # Planetary Stage 1/2 anhand Ziffern
-            if any(c.startswith(p) for p in ['PL1', 'PLB1', 'PLC1', 'PL1-', 'PLB1G', 'PLB1R']) or c.endswith('1') or c == 'RG1' or c == 'SUN1':
+            if any(c.startswith(p) for p in ['PL1', 'PLB1', 'PLC1', 'PL1-', 'PLB1G', 'PLB1R']) or c in {'RG1', 'SUN1'}:
                 return 'Planetary Stage 1'
-            if any(c.startswith(p) for p in ['PL2', 'PLB2', 'PLC2', 'PL2-', 'PLB2G', 'PLB2R']) or c.endswith('2') or c == 'RG2' or c == 'SUN2':
+            if any(c.startswith(p) for p in ['PL2', 'PLB2', 'PLC2', 'PL2-', 'PLB2G', 'PLB2R']) or c in {'RG2', 'SUN2'}:
                 return 'Planetary Stage 2'
             return 'Unbekannt'
         except Exception:
