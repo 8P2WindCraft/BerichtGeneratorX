@@ -204,6 +204,18 @@ class SettingsDialog(QDialog):
         tag_layout.addRow("Reihenfolge:", self.tag_heading_order_combo)
 
         layout.addWidget(tag_group)
+
+        # Galerie-Icon-Einstellungen
+        icon_group = QGroupBox("Galerie-Icons")
+        icon_layout = QFormLayout(icon_group)
+
+        self.gallery_icon_size_spin = QSpinBox()
+        self.gallery_icon_size_spin.setRange(50, 200)
+        self.gallery_icon_size_spin.setSuffix("%")
+        self.gallery_icon_size_spin.setToolTip("Skaliert die Größe aller Icons auf den Galeriebildern (Status-Badges, Gene-Icon, Typ-Icon, Schadens-Chips)")
+        icon_layout.addRow("Icon-Größe:", self.gallery_icon_size_spin)
+
+        layout.addWidget(icon_group)
         
         # Galerie-Raster Einstellungen
         grid_group = QGroupBox("Galerie-Raster")
@@ -995,6 +1007,10 @@ class SettingsDialog(QDialog):
         tag_opacity = settings_manager.get("tag_opacity", 200)
         self.tag_opacity_slider.setValue(tag_opacity)
         
+        # Icon-Größe in Galerie
+        gallery_icon_size = settings_manager.get("gallery_icon_size_scale", 100)
+        self.gallery_icon_size_spin.setValue(gallery_icon_size)
+        
         # Anzeige-Einstellungen
         theme = settings_manager.get("theme", "System")
         self.theme_combo.setCurrentText(theme)
@@ -1044,6 +1060,7 @@ class SettingsDialog(QDialog):
         settings_manager.set("single_tag_size", self.single_tag_size_spin.value())
         settings_manager.set("tag_opacity", self.tag_opacity_slider.value())
         settings_manager.set("gallery_grid_mode", self.gallery_grid_combo.currentText())
+        settings_manager.set("gallery_icon_size_scale", self.gallery_icon_size_spin.value())
         
         # Anzeige-Einstellungen
         settings_manager.set("theme", self.theme_combo.currentText())

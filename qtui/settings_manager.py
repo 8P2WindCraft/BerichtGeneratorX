@@ -42,6 +42,7 @@ class SettingsManager(QObject):
             "gallery_tag_size": 8,
             "single_tag_size": 9,
             "tag_opacity": 200,
+            "gallery_icon_size_scale": 100,  # Icon-Größe in Galerie (100% = Standard, 50-200%)
             "theme": "System",
             "thumb_size": 160,
             "thumb_quality": 85,

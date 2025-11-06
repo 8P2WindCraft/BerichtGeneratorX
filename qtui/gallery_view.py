@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame,
@@ -80,6 +80,7 @@ class GalleryView(QWidget):
         self._evaluation_panel: EvaluationPanel | None = None
         # Settings Manager
         self.settings_manager = get_settings_manager()
+        self.settings_manager.settingsChanged.connect(self._on_settings_changed)
 
         # Hauptlayout
         main_layout = QVBoxLayout(self)
@@ -244,6 +245,15 @@ class GalleryView(QWidget):
         self._apply_sort()
         # Tree initial befüllen
         self._rebuild_code_tree()
+    
+    def _on_settings_changed(self, changes: dict):
+        """Reagiert auf Einstellungsänderungen"""
+        if 'gallery_icon_size_scale' in changes:
+            # Icon-Größe geändert - Cache leeren und neu rendern
+            self._cache.clear()
+            self._pending_idx = 0
+            if self._labels:
+                self._loader.start(10)
     # ---------------- Tree (Bereiche/Kürzel) ----------------
     def _create_code_tree(self):
         self.code_model = QStandardItemModel()
@@ -1240,11 +1250,16 @@ class GalleryView(QWidget):
     def _overlay_metrics(self, base: int) -> dict:
         def clamp(v, lo, hi):
             return max(lo, min(hi, int(round(v))))
-        margin = clamp(base * 0.05, 3, 12)
-        main_badge = clamp(base * 0.22, 14, 36)
-        gene_badge = clamp(base * 0.16, 12, 28)
-        type_icon = clamp(base * 0.15, 10, 25)  # 15-20% kleiner (war 0.18, 12-30)
-        chip_h = clamp(base * 0.16, 12, 28)
+        
+        # Icon-Größen-Skalierung aus Einstellungen (100% = Standard)
+        icon_scale = self.settings_manager.get('gallery_icon_size_scale', 100) / 100.0
+        icon_scale = max(0.5, min(2.0, icon_scale))  # Begrenze auf 50%-200%
+        
+        margin = clamp(base * 0.05 * icon_scale, 3, 12)
+        main_badge = clamp(base * 0.22 * icon_scale, 14, 36)
+        gene_badge = clamp(base * 0.16 * icon_scale, 12, 28)
+        type_icon = clamp(base * 0.15 * icon_scale, 10, 25)  # 15-20% kleiner (war 0.18, 12-30)
+        chip_h = clamp(base * 0.16 * icon_scale, 12, 28)
         chip_gap = clamp(chip_h * 0.2, 2, 8)
         font_px = clamp(chip_h * 0.58, 8, 18)
         return {
