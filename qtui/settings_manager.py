@@ -29,6 +29,8 @@ class SettingsManager(QObject):
             "tag_overlay_heading": False,
             # Reihenfolge der Anzeige: 'below' = Code dann Überschrift, 'above' = Überschrift dann Code
             "tag_heading_order": "below",
+            # Position des Tag-Overlays: 'top' = oben, 'bottom' = unten (Standard: oben)
+            "tag_overlay_position": "top",
             # Which language to normalize metadata to when saving
             # Values: "UI" (follow current UI language), "de", "en"
             "metadata_language": "UI",
