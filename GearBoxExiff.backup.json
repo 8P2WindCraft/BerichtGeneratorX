@@ -1,0 +1,280 @@
+{
+  "ocr_settings": {
+    "active_method": "improved",
+    "confidence_threshold": 0.3,
+    "fallback_enabled": true,
+    "alternative_kurzel_enabled": true
+  },
+  "valid_kurzel": [
+    "HSS",
+    "HSSR",
+    "HSSGR",
+    "HSSGG",
+    "LSS",
+    "LSSR",
+    "LSSGR",
+    "LSSGG",
+    "PLC2GR",
+    "PLC2GG",
+    "PLC2R",
+    "RG2",
+    "SUN2",
+    "PL2-1",
+    "PLB2G-1",
+    "PLB2R-1",
+    "PL2-2",
+    "PLB2G-2",
+    "PLB2R-2",
+    "PL2-3",
+    "PLB2G-3",
+    "PLB2R-3",
+    "PLC1G",
+    "PLC1R",
+    "RG1",
+    "SUN1",
+    "PL1-1",
+    "PLB1G-1",
+    "PLB1R-1",
+    "PL1-2",
+    "PLB1G-2",
+    "PLB1R-2",
+    "PL1-3",
+    "PLB1G-3",
+    "PLB1R-3",
+    "PL1-4",
+    "PLB1G-4",
+    "PLB1R-4"
+  ],
+  "alternative_kurzel": {
+    "hss": "HSS",
+    "hssr": "HSSR",
+    "hssgr": "HSSGR",
+    "hssgg": "HSSGG",
+    "lss": "LSS",
+    "lssr": "LSSR",
+    "lssgr": "LSSGR",
+    "lssgg": "LSSGG",
+    "plc2gr": "PLC2GR",
+    "plc2gg": "PLC2GG",
+    "plc2r": "PLC2R",
+    "rg2": "RG2",
+    "sun2": "SUN2",
+    "pl2-1": "PL2-1",
+    "plb2g-1": "PLB2G-1",
+    "plb2r-1": "PLB2R-1",
+    "pl2-2": "PL2-2",
+    "plb2g-2": "PLB2G-2",
+    "plb2r-2": "PLB2R-2",
+    "pl2-3": "PL2-3",
+    "plb2g-3": "PLB2G-3",
+    "plb2r-3": "PLB2R-3",
+    "plc1g": "PLC1G",
+    "plc1r": "PLC1R",
+    "rg1": "RG1",
+    "sun1": "SUN1",
+    "pl1-1": "PL1-1",
+    "plb1g-1": "PLB1G-1",
+    "plb1r-1": "PLB1R-1",
+    "pl1-2": "PL1-2",
+    "plb1g-2": "PLB1G-2",
+    "plb1r-2": "PLB1R-2",
+    "pl1-3": "PL1-3",
+    "plb1g-3": "PLB1G-3",
+    "plb1r-3": "PLB1R-3",
+    "pl1-4": "PL1-4",
+    "plb1g-4": "PLB1G-4",
+    "plb1r-4": "PLB1R-4"
+  },
+  "kurzel_details": {},
+  "kurzel_categories": {
+    "Schmierung": {
+      "description": "Schmierstellen und Schmiersysteme",
+      "color": "#4CAF50",
+      "icon": "🔧",
+      "priority": 1
+    },
+    "Planetengetriebe": {
+      "description": "Planetengetriebe-Komponenten",
+      "color": "#2196F3",
+      "icon": "⚙️",
+      "priority": 2
+    },
+    "Ritzel": {
+      "description": "Ritzel und Zahnräder",
+      "color": "#FF9800",
+      "icon": "🦷",
+      "priority": 3
+    }
+  },
+  "kurzel_statistics": {
+    "total_count": 0,
+    "active_count": 0,
+    "inactive_count": 0,
+    "by_category": {},
+    "by_priority": {},
+    "by_frequency": {},
+    "last_updated": ""
+  },
+  "damage_categories": {
+    "de": [
+      "Visuell keine Defekte",
+      "Kratzer",
+      "Zykloidische Kratzer",
+      "Stillstandsmarken",
+      "Verschmierung",
+      "Partikeldurchgang",
+      "Überrollmarken",
+      "Pittings",
+      "Sonstige"
+    ],
+    "en": [
+      "Visually no defects",
+      "Scratches",
+      "Cycloid Scratches",
+      "Standstill marks",
+      "Smearing",
+      "Particle passage",
+      "Overrolling Marks",
+      "Pitting",
+      "Others"
+    ]
+  },
+  "image_types": {
+    "de": [
+      "Wälzkörper",
+      "Innenring",
+      "Außenring",
+      "Käfig",
+      "Zahnrad"
+    ],
+    "en": [
+      "Rolling Element",
+      "Inner ring",
+      "Outer ring",
+      "Cage",
+      "Gear"
+    ]
+  },
+  "image_quality_options": {
+    "de": [
+      "Gut",
+      "Normal",
+      "Schlecht",
+      "Verschleiß",
+      "Beschädigt",
+      "Unbekannt"
+    ],
+    "en": [
+      "Good",
+      "Normal",
+      "Poor",
+      "Traces of wear",
+      "Damage",
+      "Unknown"
+    ]
+  },
+  "use_image_options": {
+    "de": [
+      "ja",
+      "nein"
+    ],
+    "en": [
+      "yes",
+      "no"
+    ]
+  },
+  "localization": {
+    "current_language": "en",
+    "available_languages": [
+      "de",
+      "en"
+    ],
+    "auto_detect_language": true
+  },
+  "display": {
+    "window_width": 1080,
+    "window_height": 800,
+    "window_x": null,
+    "window_y": null,
+    "maximized": false,
+    "save_window_position": true,
+    "image_zoom": 1.0,
+    "show_filename": true,
+    "show_counter": true,
+    "theme": "default",
+    "font_size": 10,
+    "filter_zero_codes": true
+  },
+  "navigation": {
+    "auto_save": true,
+    "confirm_unsaved": true,
+    "keyboard_shortcuts": true,
+    "auto_load_last_folder": true,
+    "remember_last_image": true
+  },
+  "project_data": {
+    "windpark": "",
+    "windpark_land": "",
+    "sn": "",
+    "anlagen_nr": "",
+    "hersteller": "",
+    "getriebe_hersteller": "",
+    "hersteller_2": "",
+    "modell": "",
+    "gear_sn": ""
+  },
+  "custom_data": {
+    "field1": "",
+    "field2": "",
+    "field3": "",
+    "field4": "",
+    "field5": "",
+    "field6": ""
+  },
+  "export": {
+    "auto_backup": true,
+    "backup_interval": 24,
+    "export_format": "json",
+    "include_exif_data": true,
+    "include_statistics": true,
+    "report_template": "default"
+  },
+  "performance": {
+    "thumbnail_cache_size": 100,
+    "max_image_size": 2048,
+    "lazy_loading": true,
+    "cache_evaluation_data": true,
+    "max_cache_size": 1000
+  },
+  "logging": {
+    "log_level": "info",
+    "save_detailed_logs": true,
+    "log_rotation": true,
+    "max_log_size": 10,
+    "debug_mode": false
+  },
+  "paths": {
+    "last_folder": "",
+    "backup_directory": "Backups",
+    "log_directory": "logs",
+    "temp_directory": "temp"
+  },
+  "last_selections": {
+    "open_folder": "",
+    "excel_file": "",
+    "analyze_folder": "",
+    "exif_folder": ""
+  },
+  "tag_management": {
+    "auto_update_tags": true,
+    "tag_structure_file": "tag_structure.json",
+    "default_tag_structure": {},
+    "external_ocr_tags": {}
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "last_updated": "",
+    "config_version": "1.0",
+    "migration_history": []
+  }
+}

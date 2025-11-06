@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGraphicsView, 
                                 QGraphicsScene, QPushButton, QFileDialog, QMenu, QToolBar,
@@ -1676,9 +1676,8 @@ class ImageView(QGraphicsView):
         pen = QPen(QColor(220, 0, 0))
         pen.setWidth(3)
         self._rect_item = sc.addRect(x, y, w, h, pen)
-        # reposition tag label wenn vorhanden
-        if self._tag_item is not None:
-            self._tag_item.setPos(x + 4, y + 4)
+        # reposition tag label wenn vorhanden - immer zentriert
+        self._reposition_tag_overlay()
 
     def set_ocr_label(self, text: str):
         sc = self.scene()
@@ -1721,17 +1720,25 @@ class ImageView(QGraphicsView):
         self._tag_bg_item.setBrush(QBrush(QColor(255, 255, 255, opacity)))  # Weißer, halbtransparenter Hintergrund
         self._tag_bg_item.setPen(QPen(QColor(0, 0, 0, 100), 1))  # Dünner schwarzer Rand
         
-        # Position: oben in der Mitte des Bildes
+        # Position: immer horizontal zentriert, vertikal konfigurierbar (oben/unten)
         if self._pix:
             pix_width = self._pix.width()
+            pix_height = self._pix.height()
             
             # Text zentrieren im Hintergrund-Kasten
             text_width = text_rect.width()
             bg_width = bg_rect.width()
             text_x_offset = (bg_width - text_width) / 2
             
+            # Horizontal immer zentriert
             x_pos = (pix_width - bg_rect.width()) / 2
-            y_pos = 10  # 10px vom oberen Rand
+            
+            # Vertikale Position: Einstellung aus Settings (Standard: oben)
+            tag_position = self.settings_manager.get('tag_overlay_position', 'top')  # 'top' oder 'bottom'
+            if tag_position == 'bottom':
+                y_pos = pix_height - bg_rect.height() - 10  # 10px vom unteren Rand
+            else:
+                y_pos = 10  # 10px vom oberen Rand (Standard)
             
             self._tag_bg_item.setPos(x_pos, y_pos)
             self._tag_item.setPos(x_pos + text_x_offset, y_pos + padding)
@@ -1742,6 +1749,29 @@ class ImageView(QGraphicsView):
         
         sc.addItem(self._tag_bg_item)
         sc.addItem(self._tag_item)
+    
+    def _reposition_tag_overlay(self):
+        """Repositioniert das Tag-Overlay immer horizontal zentriert"""
+        if self._tag_item is None or self._tag_bg_item is None or self._pix is None:
+            return
+        
+        pix_width = self._pix.width()
+        pix_height = self._pix.height()
+        bg_rect = self._tag_bg_item.rect()
+        
+        # Horizontal immer zentriert
+        x_pos = (pix_width - bg_rect.width()) / 2
+        
+        # Vertikale Position: Einstellung aus Settings
+        tag_position = self.settings_manager.get('tag_overlay_position', 'top')
+        if tag_position == 'bottom':
+            y_pos = pix_height - bg_rect.height() - 10
+        else:
+            y_pos = 10
+        
+        self._tag_bg_item.setPos(x_pos, y_pos)
+        text_x_offset = (bg_rect.width() - self._tag_item.boundingRect().width()) / 2
+        self._tag_item.setPos(x_pos + text_x_offset, y_pos + 4)
 
     def set_context_edit_handler(self, cb):
         self._context_edit_callback = cb
@@ -1758,10 +1788,15 @@ class ImageView(QGraphicsView):
         rect = self.scene().itemsBoundingRect()
         if rect.isValid():
             self.fitInView(rect, Qt.KeepAspectRatio)
+            # Repositioniere Tag-Overlay nach fit_to_view (immer zentriert)
+            self._reposition_tag_overlay()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self.fit_to_view()
+        
+        # Repositioniere Tag-Overlay bei Resize (immer zentriert)
+        self._reposition_tag_overlay()
         
         # Positioniere Navigation-Overlay am unteren Rand zentriert
         if hasattr(self.parent(), 'nav_container'):
@@ -1781,6 +1816,8 @@ class ImageView(QGraphicsView):
             self.scale(factor, factor)
             self._zoom_factor *= factor
             self._update_zoom_label()
+            # Repositioniere Tag-Overlay nach Zoom (immer zentriert)
+            self._reposition_tag_overlay()
         else:
             super().wheelEvent(ev)
     
@@ -1795,6 +1832,8 @@ class ImageView(QGraphicsView):
         self.scale(factor, factor)
         self._zoom_factor *= factor
         self._update_zoom_label()
+        # Repositioniere Tag-Overlay nach Zoom (immer zentriert)
+        self._reposition_tag_overlay()
     
     def zoom_out(self):
         """Verkleinert die Ansicht"""
@@ -1802,6 +1841,8 @@ class ImageView(QGraphicsView):
         self.scale(factor, factor)
         self._zoom_factor *= factor
         self._update_zoom_label()
+        # Repositioniere Tag-Overlay nach Zoom (immer zentriert)
+        self._reposition_tag_overlay()
     
     def reset_zoom(self):
         """Setzt Zoom auf 1:1 zurück"""

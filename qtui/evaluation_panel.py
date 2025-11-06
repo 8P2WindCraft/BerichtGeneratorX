@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 """Gemeinsames Bewertungs-Panel für Einzelbild- und Galerie-Ansichten."""
 
@@ -339,8 +339,16 @@ class EvaluationPanel(QWidget):
                         if predefined_image_type:
                             # Setze vordefinierte Bildart
                             eval_obj['image_type'] = predefined_image_type
-                            # Sofort speichern
-                            set_evaluation(path, eval_obj)
+                            # Sofort speichern (bestehende Werte bewahren)
+                            set_evaluation(
+                                path,
+                                categories=eval_obj.get('categories'),
+                                quality=eval_obj.get('quality'),
+                                image_type=eval_obj.get('image_type'),
+                                image_types=eval_obj.get('image_types'),
+                                notes=eval_obj.get('notes'),
+                                gene=eval_obj.get('gene'),
+                            )
                 except Exception:
                     pass
             

@@ -168,7 +168,7 @@ class KurzelTableManager:
                         if 'frequency' in row:
                             try:
                                 row['frequency'] = int(row['frequency'])
-                            except:
+                            except (ValueError, TypeError):
                                 row['frequency'] = 0
                         # Reihenfolge (order) optional konvertieren
                         try:

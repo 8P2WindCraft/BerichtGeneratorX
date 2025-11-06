@@ -29,6 +29,8 @@ class SettingsManager(QObject):
             "tag_overlay_heading": False,
             # Reihenfolge der Anzeige: 'below' = Code dann Überschrift, 'above' = Überschrift dann Code
             "tag_heading_order": "below",
+            # Position des Tag-Overlays: 'top' = oben, 'bottom' = unten (Standard: oben)
+            "tag_overlay_position": "top",
             # Which language to normalize metadata to when saving
             # Values: "UI" (follow current UI language), "de", "en"
             "metadata_language": "UI",
@@ -40,6 +42,7 @@ class SettingsManager(QObject):
             "gallery_tag_size": 8,
             "single_tag_size": 9,
             "tag_opacity": 200,
+            "gallery_icon_size_scale": 100,  # Icon-Größe in Galerie (100% = Standard, 50-200%)
             "theme": "System",
             "thumb_size": 160,
             "thumb_quality": 85,
@@ -558,6 +561,11 @@ class SettingsManager(QObject):
     def _merge_defaults(defaults, current):
         seen = set()
         merged = []
+        # Stelle sicher, dass beide Parameter iterierbar sind
+        if not isinstance(defaults, (list, tuple)):
+            defaults = []
+        if not isinstance(current, (list, tuple)):
+            current = []
         for source in (current, defaults):
             for item in source:
                 if not isinstance(item, str):
