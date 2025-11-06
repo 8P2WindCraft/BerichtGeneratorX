@@ -369,11 +369,15 @@ class CentralConfigManager:
     def get_kurzel_details(self, kurzel_code):
         """Holt detaillierte Informationen zu einem Kürzel"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return {}
         return kurzel_details.get(kurzel_code, {})
     
     def set_kurzel_details(self, kurzel_code, details):
         """Setzt detaillierte Informationen für ein Kürzel"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            kurzel_details = {}
         kurzel_details[kurzel_code] = details
         self.set_setting('kurzel_details', kurzel_details)
         self.update_kurzel_statistics()
@@ -382,6 +386,8 @@ class CentralConfigManager:
     def add_kurzel(self, kurzel_code, details):
         """Fügt ein neues Kürzel hinzu"""
         valid_kurzel = self.get_setting('valid_kurzel', [])
+        if not isinstance(valid_kurzel, list):
+            valid_kurzel = []
         if kurzel_code not in valid_kurzel:
             valid_kurzel.append(kurzel_code)
             self.set_setting('valid_kurzel', valid_kurzel)
@@ -409,12 +415,12 @@ class CentralConfigManager:
     def delete_kurzel(self, kurzel_code):
         """Löscht ein Kürzel"""
         valid_kurzel = self.get_setting('valid_kurzel', [])
-        if kurzel_code in valid_kurzel:
+        if isinstance(valid_kurzel, list) and kurzel_code in valid_kurzel:
             valid_kurzel.remove(kurzel_code)
             self.set_setting('valid_kurzel', valid_kurzel)
         
         kurzel_details = self.get_setting('kurzel_details', {})
-        if kurzel_code in kurzel_details:
+        if isinstance(kurzel_details, dict) and kurzel_code in kurzel_details:
             del kurzel_details[kurzel_code]
             self.set_setting('kurzel_details', kurzel_details)
         
@@ -425,40 +431,54 @@ class CentralConfigManager:
     def get_kurzel_by_category(self, category):
         """Holt alle Kürzel einer Kategorie"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return []
         return [code for code, details in kurzel_details.items() 
-                if details.get('category') == category]
+                if isinstance(details, dict) and details.get('category') == category]
     
     def get_kurzel_by_priority(self, priority):
         """Holt alle Kürzel einer Priorität"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return []
         return [code for code, details in kurzel_details.items() 
-                if details.get('priority') == priority]
+                if isinstance(details, dict) and details.get('priority') == priority]
     
     def get_kurzel_by_frequency(self, frequency):
         """Holt alle Kürzel einer Häufigkeit"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return []
         return [code for code, details in kurzel_details.items() 
-                if details.get('frequency') == frequency]
+                if isinstance(details, dict) and details.get('frequency') == frequency]
     
     def get_active_kurzel(self):
         """Holt alle aktiven Kürzel"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return []
         return [code for code, details in kurzel_details.items() 
-                if details.get('active', True)]
+                if isinstance(details, dict) and details.get('active', True)]
     
     def get_inactive_kurzel(self):
         """Holt alle inaktiven Kürzel"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return []
         return [code for code, details in kurzel_details.items() 
-                if not details.get('active', True)]
+                if isinstance(details, dict) and not details.get('active', True)]
     
     def search_kurzel(self, search_term):
         """Sucht Kürzel nach verschiedenen Kriterien"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            return []
         results = []
         search_term_lower = search_term.lower()
         
         for code, details in kurzel_details.items():
+            if not isinstance(details, dict):
+                continue
             if (search_term_lower in code.lower() or
                 search_term_lower in details.get('name', '').lower() or
                 search_term_lower in details.get('description', '').lower() or
@@ -470,23 +490,31 @@ class CentralConfigManager:
     def update_kurzel_statistics(self):
         """Aktualisiert die Kürzel-Statistiken"""
         kurzel_details = self.get_setting('kurzel_details', {})
+        if not isinstance(kurzel_details, dict):
+            kurzel_details = {}
         
         total_count = len(kurzel_details)
-        active_count = len([d for d in kurzel_details.values() if d.get('active', True)])
+        active_count = len([d for d in kurzel_details.values() if isinstance(d, dict) and d.get('active', True)])
         inactive_count = total_count - active_count
         
         by_category = {}
         for details in kurzel_details.values():
+            if not isinstance(details, dict):
+                continue
             category = details.get('category', 'Unbekannt')
             by_category[category] = by_category.get(category, 0) + 1
         
         by_priority = {}
         for details in kurzel_details.values():
+            if not isinstance(details, dict):
+                continue
             priority = details.get('priority', 0)
             by_priority[priority] = by_priority.get(priority, 0) + 1
         
         by_frequency = {}
         for details in kurzel_details.values():
+            if not isinstance(details, dict):
+                continue
             frequency = details.get('frequency', 'unbekannt')
             by_frequency[frequency] = by_frequency.get(frequency, 0) + 1
         
