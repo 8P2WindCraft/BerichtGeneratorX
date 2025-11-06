@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel,
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit,
@@ -1198,6 +1198,7 @@ class SettingsDialog(QDialog):
         n = len(order)
         self.tbl_headings.setRowCount(n)
         for i in range(n):
+            # Sicherstellen, dass Index-Zugriffe sicher sind
             txt_de = de[i] if i < len(de) else (order[i] if i < len(order) else "")
             txt_en = en[i] if i < len(en) else ""
             self.tbl_headings.setItem(i, 0, QTableWidgetItem(txt_de))

@@ -558,6 +558,11 @@ class SettingsManager(QObject):
     def _merge_defaults(defaults, current):
         seen = set()
         merged = []
+        # Stelle sicher, dass beide Parameter iterierbar sind
+        if not isinstance(defaults, (list, tuple)):
+            defaults = []
+        if not isinstance(current, (list, tuple)):
+            current = []
         for source in (current, defaults):
             for item in source:
                 if not isinstance(item, str):

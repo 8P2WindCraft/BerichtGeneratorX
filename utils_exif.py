@@ -61,9 +61,6 @@ def save_exif_usercomment(image_path, json_data):
     try:
         with Image.open(image_path) as img:
             exif = img.getexif()
-            if exif is None:
-                exif = {}
-            
             # Konvertiere JSON zu Bytes mit Standard-Prefix
             json_string = json.dumps(json_data, ensure_ascii=False)
             json_bytes = json_string.encode('utf-8')
@@ -80,10 +77,17 @@ def save_exif_usercomment(image_path, json_data):
                 # Fallback: verwende einen bekannten Tag-ID für UserComment
                 usercomment_tag_id = 37510
             
-            exif[usercomment_tag_id] = user_comment
+            # Erstelle neues Exif-Objekt wenn keines vorhanden ist
+            if exif is None:
+                exif_dict = {}
+            else:
+                # Konvertiere Exif zu dict für Modifikation
+                exif_dict = dict(exif)
+            
+            exif_dict[usercomment_tag_id] = user_comment
             
             # Speichere das Bild mit neuen EXIF-Daten
-            img.save(image_path, exif=exif)
+            img.save(image_path, exif=exif_dict)
             write_detailed_log("info", "EXIF-Daten erfolgreich gespeichert", f"Bild: {image_path}, Größe: {len(json_string)} Zeichen")
             return True
     except Exception as e:
