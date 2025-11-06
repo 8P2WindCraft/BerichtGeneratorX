@@ -195,7 +195,6 @@ def get_evaluation(image_path: str) -> dict:
             eval_obj['gene'] = bool(md.get('gene_flag'))
 
         return eval_obj
-        return {}
     except Exception as e:
         write_detailed_log("error", "get_evaluation fehlgeschlagen", f"Bild: {image_path}", e)
         return {}

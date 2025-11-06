@@ -98,6 +98,10 @@ class EvaluationCache:
         if not rules:
             return self._check_is_evaluated_legacy(exif_data)
         
+        # Stelle sicher, dass rules eine Liste ist
+        if not isinstance(rules, list):
+            return self._check_is_evaluated_legacy(exif_data)
+        
         # Prüfe jede Regel (OR-Verknüpfung zwischen Regeln)
         for rule in rules:
             # AND-Verknüpfung innerhalb der Regel
