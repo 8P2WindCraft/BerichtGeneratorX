@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-block_cipher = None
 
 a = Analysis(
     ['main_qt.py'],
@@ -10,61 +9,15 @@ a = Analysis(
         ('GearBoxExiff.json', '.'),
         ('GearBoxExiff.backup.json', '.'),
     ],
-    hiddenimports=[
-        'PySide6.QtCore',
-        'PySide6.QtGui',
-        'PySide6.QtWidgets',
-        'pandas',
-        'numpy',
-        'pillow',
-        'PIL',
-        'PIL.Image',
-        'PIL.ImageDraw',
-        'PIL.ImageFont',
-        'requests',
-        'beautifulsoup4',
-        'qtui.app',
-        'qtui.main_window',
-        'qtui.single_view',
-        'qtui.gallery_view',
-        'qtui.cover_view',
-        'qtui.excel_view',
-        'qtui.evaluation_panel',
-        'qtui.evaluation_cache',
-        'qtui.settings_manager',
-        'qtui.settings_dialog',
-        'qtui.kurzel_manager',
-        'qtui.migration_tools',
-        'qtui.theme',
-        'qtui.widgets',
-        'qtui.drawing_tools',
-        'qtui.loading_screen',
-        'qtui.shortcuts_help',
-        'qtui.dialogs',
-        'utils_exif',
-        'utils_logging',
-        'utils_helpers',
-        'utils_csv',
-        'config_manager',
-        'core_kurzel',
-        'constants',
-    ],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'tkinter',
-        'matplotlib',
-        'scipy',
-        'pytest',
-    ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    excludes=[],
     noarchive=False,
+    optimize=0,
 )
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -76,19 +29,16 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,  # Kein Konsolenfenster
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
 )
-
 coll = COLLECT(
     exe,
     a.binaries,
-    a.zipfiles,
     a.datas,
     strip=False,
     upx=True,

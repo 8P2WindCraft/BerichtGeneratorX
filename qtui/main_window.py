@@ -1,8 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QSplitter, QFrame, QTreeView, QDockWidget, QProgressBar, QPushButton, QMenuBar, QMenu, QDialog, QFileDialog, QMessageBox, QToolTip
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QShortcut, QKeySequence, QCursor, QStandardItemModel, QStandardItem
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QSplitter, QFrame, QTreeView, QDockWidget, QProgressBar, QPushButton, QMenuBar, QMenu, QDialog, QFileDialog, QMessageBox, QToolTip, QStatusBar
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QAction, QShortcut, QKeySequence, QCursor, QStandardItemModel, QStandardItem, QDesktopServices
 from utils_logging import get_logger
 from .single_view import SingleView
 from .gallery_view import GalleryView
@@ -16,6 +16,9 @@ from .kurzel_manager import KurzelManagerDialog
 from .migration_tools import MigrationDialog
 import os
 import html
+
+
+_STATUS_SENTINEL = object()
 
 
 class MainWindow(QMainWindow):
@@ -33,6 +36,17 @@ class MainWindow(QMainWindow):
         # Evaluation Cache System
         from .evaluation_cache import EvaluationCache
         self.evaluation_cache = EvaluationCache()
+        
+        # Evaluation Cache Layer für schnelles Speichern
+        from .evaluation_cache_layer import EvaluationCacheLayer
+        from .evaluation_cache_worker import EvaluationCacheWorker
+        self.evaluation_cache_layer = EvaluationCacheLayer()
+        self.evaluation_cache_worker = EvaluationCacheWorker(self.evaluation_cache_layer, self)
+        # Verbinde Worker-Signale
+        self.evaluation_cache_worker.progress.connect(self._on_cache_worker_progress)
+        self.evaluation_cache_worker.error.connect(self._on_cache_worker_error)
+        # Starte Worker
+        self.evaluation_cache_worker.start()
         
         # TreeView Rebuild Debouncing (verhindert zu häufige Updates)
         from PySide6.QtCore import QTimer
@@ -65,6 +79,11 @@ class MainWindow(QMainWindow):
         # Beim Start ggf. letzten Ordner laden
         self._load_last_folder()
         self._load_cover_folder()
+
+        # Statusbar-Status zwischenspeichern
+        self._status_folder_value = ""
+        self._status_filename_value = ""
+        self._status_folder_label = None
         
         # Theme aus Einstellungen laden
         self._apply_theme_from_settings()
@@ -194,6 +213,9 @@ class MainWindow(QMainWindow):
             self._rebuild_ocr_tree()
         except Exception:
             pass
+        
+        # Statusleiste (Fußzeile) mit Ordnerpfad erstellen
+        self._create_status_bar()
 
 
     def _add_tabs(self):
@@ -255,6 +277,18 @@ class MainWindow(QMainWindow):
 
     def _open_in_single(self, path: str, switch_tab: bool = True):
         # Lade Bild in Einzelbildansicht
+        # Prüfe ob Bild bereits geladen ist, um Signalschleife zu vermeiden
+        current_path = None
+        if hasattr(self.single, '_current_path'):
+            try:
+                current_path = self.single._current_path()
+            except Exception:
+                pass
+        
+        # Nur laden wenn es ein anderes Bild ist
+        if current_path == path:
+            return
+        
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == "Einzelbild":
                 w = self.tabs.widget(i)
@@ -284,6 +318,10 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: self._highlight_current_kurzel_in_tree(path))
             except Exception:
                 pass
+
+        # Statusleiste: Dateiname aktualisieren
+        filename = os.path.basename(path) if path else ""
+        self._update_status_bar(filename=filename)
 
     def _on_progress(self, pos: int, total: int, done: int):
         if not hasattr(self, 'progress') or self.progress is None:
@@ -370,6 +408,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._update_open_folder_tooltip(folder)
+        # Statusleiste aktualisieren
+        self._update_status_bar(folder=folder)
         
         # Automatisch Titelbilder-Ordner eine Ebene höher setzen
         if folder and hasattr(self, 'cover'):
@@ -390,7 +430,12 @@ class MainWindow(QMainWindow):
         self._update_gene_counter()
 
     def _init_evaluation_dock(self):
-        self.evaluation_panel = EvaluationPanel(self)
+        # Erstelle EvaluationPanel mit Cache-Layer
+        cache_layer = getattr(self, 'evaluation_cache_layer', None)
+        self.evaluation_panel = EvaluationPanel(self, cache_layer=cache_layer)
+        # Falls Cache-Layer später gesetzt wurde, setze es nachträglich
+        if cache_layer:
+            self.evaluation_panel.set_cache_layer(cache_layer)
         self.evaluation_panel.evaluationChanged.connect(self._on_global_evaluation_changed)
         self.evaluation_panel.useChanged.connect(self._on_global_use_changed)
         dock = QDockWidget("Bewertung", self)
@@ -403,31 +448,67 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'single'):
             try:
                 self.single.set_evaluation_panel(self.evaluation_panel)
+                # Setze Cache-Layer auch in SingleView
+                if cache_layer and hasattr(self.single, 'set_cache_layer'):
+                    self.single.set_cache_layer(cache_layer)
             except Exception:
                 pass
         if hasattr(self, 'gallery'):
             try:
                 self.gallery.set_evaluation_panel(self.evaluation_panel)
+                # Setze Cache-Layer auch in GalleryView
+                if cache_layer and hasattr(self.gallery, 'set_cache_layer'):
+                    self.gallery.set_cache_layer(cache_layer)
             except Exception:
                 pass
 
     def _on_global_evaluation_changed(self, path: str, state: dict):
         self._update_dock_visibility()
         try:
-            # Galerie-Refresh asynchron
+            # Galerie-Refresh asynchron mit Verzögerung (für bessere Performance)
             from PySide6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self.gallery.refresh_item(path, emit_signal=False))
+            QTimer.singleShot(0, lambda: self.gallery.refresh_item(path, emit_signal=False, delay_ms=500))
         except Exception:
             pass
+    
+    def _on_cache_worker_progress(self, path: str):
+        """Wird aufgerufen wenn Worker erfolgreich ein Bild in EXIF geschrieben hat"""
+        try:
+            # Aktualisiere Galerie-Overlay für dieses Bild
+            if hasattr(self, 'gallery') and self.gallery:
+                self.gallery.refresh_item(path, emit_signal=False, delay_ms=0)  # Sofort aktualisieren
+        except Exception:
+            pass
+    
+    def _on_cache_worker_error(self, path: str, error_message: str):
+        """Wird aufgerufen wenn Worker einen Fehler beim Schreiben hatte"""
+        try:
+            from utils_logging import get_logger
+            logger = get_logger('app', {"module": "qtui.main_window"})
+            logger.error("cache_worker_error", extra={"event": "cache_worker_error", "path": path, "error": error_message})
+        except Exception:
+            pass
+    
+    def closeEvent(self, event):
+        """Wird beim Schließen des Fensters aufgerufen"""
+        # Stoppe Cache-Worker und flushe alle pending changes
+        if hasattr(self, 'evaluation_cache_worker') and self.evaluation_cache_worker:
+            try:
+                self.evaluation_cache_worker.stop()
+            except Exception:
+                pass
         
-        # TreeView aktualisieren (debounced)
-        if hasattr(self, 'evaluation_cache'):
-            self.evaluation_cache.invalidate()
-        self._schedule_tree_rebuild()
+        # Bereinige Cache-Layer (verhindert Memory Leak)
+        if hasattr(self, 'evaluation_cache_layer') and self.evaluation_cache_layer:
+            try:
+                # Flushe alle verbleibenden pending changes
+                self.evaluation_cache_layer.flush_all()
+                # Bereinige EXIF-Cache (optional, spart RAM)
+                # self.evaluation_cache_layer.clear_cache()  # Zu aggressiv, könnte Datenverlust verursachen
+            except Exception:
+                pass
         
-        # Gene-Counter aktualisieren wenn Gene-Flag geändert wurde
-        if 'gene' in state:
-            self._update_gene_counter()
+        super().closeEvent(event)
 
     def _on_global_use_changed(self, path: str, value: bool):
         self._update_dock_visibility()
@@ -473,7 +554,7 @@ class MainWindow(QMainWindow):
         
         # Hole Kategorie-Überschriften und Sprache
         category_headings = self.settings_manager.get('category_headings', {}) or {}
-        language = self.settings_manager.get('language', 'Deutsch') or 'Deutsch'
+        language = self.settings_manager.get('language', 'English') or 'English'
         use_de = language.lower().startswith('de')
         
         # Gruppiere nach Kategorien
@@ -839,6 +920,59 @@ class MainWindow(QMainWindow):
         
         view_menu.addSeparator()
         
+        # Navigation Position
+        nav_menu = view_menu.addMenu("Navigation Position")
+        
+        self.nav_overlay_action = nav_menu.addAction("Über dem Bild (Overlay)")
+        self.nav_overlay_action.setCheckable(True)
+        self.nav_overlay_action.triggered.connect(lambda: self._set_navigation_position('overlay'))
+        
+        self.nav_below_action = nav_menu.addAction("Unter dem Bild")
+        self.nav_below_action.setCheckable(True)
+        self.nav_below_action.triggered.connect(lambda: self._set_navigation_position('below'))
+        
+        # Aktuellen Modus aus Settings setzen
+        nav_position = str(self.settings_manager.get("navigation_position", "below") or "below")
+        # Wenn ein nicht mehr unterstützter Modus gesetzt ist, auf "below" zurücksetzen
+        if nav_position not in ["overlay", "below"]:
+            nav_position = "below"
+            self.settings_manager.set("navigation_position", "below")
+        
+        if nav_position == "below":
+            self.nav_below_action.setChecked(True)
+        else:
+            self.nav_overlay_action.setChecked(True)
+        
+        view_menu.addSeparator()
+        
+        # Tastaturkürzel anzeigen
+        self.show_shortcuts_action = view_menu.addAction("Tastaturkürzel anzeigen")
+        self.show_shortcuts_action.setCheckable(True)
+        self.show_shortcuts_action.setChecked(self.settings_manager.get("show_keyboard_shortcuts", True))
+        self.show_shortcuts_action.triggered.connect(self._toggle_keyboard_shortcuts)
+        
+        view_menu.addSeparator()
+        
+        # Sprache-Menü
+        language_menu = view_menu.addMenu("Sprache")
+        
+        self.language_english_action = language_menu.addAction("English")
+        self.language_english_action.setCheckable(True)
+        self.language_english_action.triggered.connect(lambda: self._set_language('English'))
+        
+        self.language_deutsch_action = language_menu.addAction("Deutsch")
+        self.language_deutsch_action.setCheckable(True)
+        self.language_deutsch_action.triggered.connect(lambda: self._set_language('Deutsch'))
+        
+        # Aktuelle Sprache aus Settings setzen
+        current_language = self.settings_manager.get("language", "English")
+        if current_language == "Deutsch":
+            self.language_deutsch_action.setChecked(True)
+        else:
+            self.language_english_action.setChecked(True)
+        
+        view_menu.addSeparator()
+        
         # Theme-Menü
         theme_menu = view_menu.addMenu("Theme")
         
@@ -857,6 +991,14 @@ class MainWindow(QMainWindow):
         
         # Extras-Menü
         tools_menu = menubar.addMenu("Extras")
+        
+        json_action = tools_menu.addAction("EXIF-JSON anzeigen...")
+        json_action.triggered.connect(self._show_current_metadata)
+
+        open_image_action = tools_menu.addAction("Originalbild öffnen...")
+        open_image_action.triggered.connect(self._open_current_image)
+        
+        tools_menu.addSeparator()
         
         config_editor_action = tools_menu.addAction("Konfiguration bearbeiten...")
         config_editor_action.triggered.connect(self._open_config_editor)
@@ -889,6 +1031,30 @@ class MainWindow(QMainWindow):
     def _open_folder(self):
         """Ordner öffnen"""
         self.single._open_folder()
+
+    def _get_current_image_path(self) -> str | None:
+        try:
+            if hasattr(self, 'single') and self.single and hasattr(self.single, 'current_path'):
+                return self.single.current_path()
+        except Exception:
+            pass
+        return None
+
+    def _show_current_metadata(self):
+        if hasattr(self, 'single') and self.single and hasattr(self.single, 'show_metadata_popup'):
+            self.single.show_metadata_popup()
+            return
+        QMessageBox.information(self, "Keine Ansicht", "Die Einzelbildansicht ist derzeit nicht verfügbar.")
+
+    def _open_current_image(self):
+        path = self._get_current_image_path()
+        if not path:
+            QMessageBox.information(self, "Kein Bild", "Bitte zuerst ein Bild auswählen.")
+            return
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Nicht gefunden", f"Die Datei existiert nicht mehr:\n{path}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _show_open_folder_tooltip(self):
         text = self._open_action_tooltip or "Kein Ordner gewählt"
@@ -1100,9 +1266,62 @@ class MainWindow(QMainWindow):
                          "Eine moderne Bildanalyse-Anwendung mit OCR-Funktionalität.\n\n"
                          "Version: 2.0 (PySide6)")
     
+    def _set_navigation_position(self, position: str):
+        """Setzt Navigation-Position und aktualisiert UI"""
+        # Nur noch "overlay" und "below" unterstützen
+        if position not in ["overlay", "below"]:
+            position = "overlay"
+        
+        # Alle Actions deaktivieren
+        self.nav_overlay_action.setChecked(position == 'overlay')
+        self.nav_below_action.setChecked(position == 'below')
+        
+        # Setting speichern
+        self.settings_manager.set("navigation_position", position)
+        
+        # Single View wird automatisch über settingsChanged Signal aktualisiert
+        self._log.info("navigation_position_changed", extra={"event": "navigation_position_changed", "position": position})
+    
+    def _set_language(self, language: str):
+        """Setzt Sprache und aktualisiert UI"""
+        # Andere Action deaktivieren
+        if language == 'English':
+            self.language_english_action.setChecked(True)
+            self.language_deutsch_action.setChecked(False)
+        else:
+            self.language_english_action.setChecked(False)
+            self.language_deutsch_action.setChecked(True)
+        
+        # Setting speichern
+        self.settings_manager.set("language", language)
+        
+        # Sprachwechsel über settingsChanged Signal wird automatisch verarbeitet
+        self._log.info("language_changed", extra={"event": "language_changed", "language": language})
+    
+    def _toggle_keyboard_shortcuts(self, checked: bool):
+        """Schaltet Anzeige der Tastaturkürzel um"""
+        self.settings_manager.set("show_keyboard_shortcuts", checked)
+        
+        # Aktualisiere Evaluation Panel
+        if hasattr(self, 'evaluation_panel') and self.evaluation_panel:
+            self.evaluation_panel.refresh_button_labels()
+        
+        self._log.info("keyboard_shortcuts_toggled", extra={
+            "event": "keyboard_shortcuts_toggled",
+            "enabled": checked
+        })
+    
     def _on_settings_changed(self, settings_dict):
         """Einstellungsänderungen verarbeiten"""
         self._log.info("settings_changed", extra={"event": "settings_changed", "settings": list(settings_dict.keys())})
+        
+        # Tastaturkürzel aktualisieren
+        if "show_keyboard_shortcuts" in settings_dict:
+            if hasattr(self, 'evaluation_panel') and self.evaluation_panel:
+                self.evaluation_panel.refresh_button_labels()
+            # Aktualisiere Menü-Checkbox
+            if hasattr(self, 'show_shortcuts_action'):
+                self.show_shortcuts_action.setChecked(self.settings_manager.get("show_keyboard_shortcuts", True))
         
         # Theme anwenden
         if "theme" in settings_dict:
@@ -1111,6 +1330,16 @@ class MainWindow(QMainWindow):
         # OCR-Tag-Größen aktualisieren
         if any(key in settings_dict for key in ["gallery_tag_size", "single_tag_size", "tag_opacity"]):
             self._update_ocr_tag_settings()
+        
+        # Galerie Overlay-Icon-Größe aktualisieren
+        if "gallery_overlay_icon_scale" in settings_dict:
+            if hasattr(self, 'gallery') and self.gallery:
+                # Galerie neu rendern, damit neue Icon-Größe angewendet wird
+                try:
+                    self.gallery._pending_idx = 0
+                    self.gallery._load_chunk()
+                except Exception:
+                    pass
         
         # Thumbnail-Größe aktualisieren
         if "thumb_size" in settings_dict:
@@ -1138,5 +1367,36 @@ class MainWindow(QMainWindow):
                 self.gallery.refresh_layout_from_settings()
         except Exception:
             pass
+    
+    def _create_status_bar(self):
+        """Erstellt Statusleiste mit Ordnerpfad"""
+        status_bar = self.statusBar()
+        status_bar.setStyleSheet("QStatusBar { border-top: 1px solid #ccc; }")
+        
+        # Label für Ordnerpfad
+        self._status_folder_label = QLabel("")
+        from PySide6.QtGui import QFont
+        font = QFont()
+        font.setPointSize(6)
+        self._status_folder_label.setFont(font)
+        self._status_folder_label.setStyleSheet("QLabel { color: #666; padding: 2px; }")
+        status_bar.addWidget(self._status_folder_label)
+        
+        # Initialen Pfad setzen
+        folder = getattr(self, '_current_folder', '') or ''
+        self._update_status_bar(folder=folder, filename="")
+    
+    def _update_status_bar(self, folder=_STATUS_SENTINEL, filename=_STATUS_SENTINEL):
+        """Aktualisiert Statusleiste mit Ordnerpfad"""
+        if folder is not _STATUS_SENTINEL:
+            self._status_folder_value = folder or ""
+        if filename is not _STATUS_SENTINEL:
+            self._status_filename_value = filename or ""
 
-        pass
+        if hasattr(self, '_status_folder_label') and self._status_folder_label:
+            parts = []
+            if self._status_folder_value:
+                parts.append(self._status_folder_value)
+            if self._status_filename_value:
+                parts.append(self._status_filename_value)
+            self._status_folder_label.setText(" – ".join(parts) if parts else "Kein Ordner ausgewählt")

@@ -3,7 +3,8 @@ from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGraphicsView, 
                                 QGraphicsScene, QPushButton, QFileDialog, QMenu, QToolBar,
                                 QComboBox, QSpinBox, QGroupBox, QButtonGroup, QRadioButton,
-                                QDialog, QDialogButtonBox, QPlainTextEdit, QMessageBox, QScrollArea)
+                                QDialog, QDialogButtonBox, QPlainTextEdit, QMessageBox, QScrollArea,
+                                QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 from PySide6.QtGui import QPixmap, QPainter, QKeySequence, QShortcut, QPen, QColor, QAction
 from PySide6.QtCore import Qt, Signal, QObject, QThread, QPointF, QTimer, QSize
 from utils_logging import get_logger
@@ -11,6 +12,7 @@ from utils_exif import (
     set_used_flag,
     set_evaluation,
     read_metadata,
+    write_metadata,
     get_used_flag,
     set_ocr_info,
     get_ocr_info,
@@ -25,6 +27,8 @@ from .drawing_tools import DrawingManager, DrawingMode
 from .evaluation_panel import EvaluationPanel
 from .widgets import ToggleSwitch
 import os
+import shutil
+import tempfile
 
 
 class DynamicPlainTextEdit(QPlainTextEdit):
@@ -131,6 +135,16 @@ class SingleView(QWidget):
         self._image_cache = {}  # {path: QPixmap}
         self._cache_range = 8  # 8 Bilder vorher + 8 nachher = 16 Bilder gecacht
         self._max_cache_size = 25  # Maximale Cache-Größe
+        self._original_backup_paths = set()
+        self._pending_drawing_task = None
+        self._drawing_flush_scheduled = False
+        self._drawing_save_in_progress = False
+        
+        # Cache für Zeichnungsdaten pro Pfad (bleibt auch bei EXIF-Lesefehlern erhalten)
+        self._drawings_cache = {}  # {path: list[dict]}
+        
+        # Cache-Layer für Bewertungen (wird von MainWindow gesetzt)
+        self._cache_layer = None
 
         # Header: Ordner + Info + Aktionen
         head = QHBoxLayout(); v.addLayout(head)
@@ -151,9 +165,6 @@ class SingleView(QWidget):
         self._update_sort_button_style(True)  # Initial grün
         head.addWidget(self.sort_toggle_btn)
         
-        self.btn_metadata = QPushButton("JSON anzeigen")
-        self.btn_metadata.clicked.connect(self._show_metadata_popup)
-        head.addWidget(self.btn_metadata)
         head.addStretch(1)
         use_label = QLabel("Bild verwenden")
         use_label.setStyleSheet("font-weight: bold;")
@@ -192,7 +203,7 @@ class SingleView(QWidget):
         zoom_toolbar = self._create_zoom_toolbar_vertical()
         left_toolbar_layout.addWidget(zoom_toolbar)
         
-        left_toolbar_layout.addStretch(1)
+        # KEIN addStretch - Toolbar soll bis ganz unten reichen, damit Navigation nicht separiert aussieht
         # ScrollArea für dynamische Höhe/kleine Fenster
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
@@ -216,11 +227,17 @@ class SingleView(QWidget):
         # Platzhalter für externes Bewertungs-Panel
         self._evaluation_panel: EvaluationPanel | None = None
         
-        # Navigation als Overlay auf dem Canvas unter dem Bild
+        # Navigation als Overlay auf dem Canvas oder unter dem Bild
         self.nav_container = self._create_canvas_navigation()
+        # WICHTIG: Setze Parent sofort, damit es nicht als separates Fenster erscheint
         self.nav_container.setParent(self.view)
-        self.nav_container.raise_()
-        self.nav_container.hide()
+        self.nav_below_wrapper = None  # Wrapper für zentrierte Navigation unter dem Bild
+        
+        # Initialisiere Navigation-Position basierend auf Settings
+        self._update_navigation_position()
+        
+        # Verbinde Settings-Änderungen
+        self.settings_manager.settingsChanged.connect(self._on_settings_changed)
 
         # Tastatur-Shortcuts (Pfeiltasten)
         QShortcut(QKeySequence(Qt.Key_Left), self, activated=self.prev_image)
@@ -250,6 +267,7 @@ class SingleView(QWidget):
         desc_row.addWidget(self.btn_text_snippets, 0)  # Stretch factor 0 = feste Größe
         
         desc_layout.addLayout(desc_row)
+        self.desc_group = desc_group  # Speichere Referenz für Navigation-Positionierung
         v.addWidget(desc_group)
 
         # Debounced Auto-Save fr die Textbox
@@ -343,6 +361,22 @@ class SingleView(QWidget):
             pass
         return tag or ""
 
+    def _update_ocr_header_display(self, tag: str):
+        if not hasattr(self, 'ocr_info_label'):
+            return
+        tag_clean = (tag or "").strip().upper()
+        if not tag_clean or tag_clean in {"—", "NONE"}:
+            self.ocr_info_label.setText("OCR: —")
+            return
+        evaluated = total = 0
+        window = self.window()
+        if window and hasattr(window, 'evaluation_cache') and window.evaluation_cache:
+            try:
+                evaluated, total = window.evaluation_cache.get_kurzel_progress(tag_clean)
+            except Exception:
+                evaluated = total = 0
+        self.ocr_info_label.setText(f"OCR: {tag_clean} – bewertet {evaluated}/{total}")
+
     def _mark_as_ok_and_next(self):
         """Setzt 'Visuell keine Defekte' und verwendet das Bild."""
         current_path = self._current_path()
@@ -386,6 +420,7 @@ class SingleView(QWidget):
         """Erstellt Navigation direkt auf dem Canvas unter dem Bild"""
         # Navigation-Container als Overlay auf dem Canvas
         nav_container = QWidget()
+        nav_container.setWindowFlags(Qt.WindowType.Widget)  # WICHTIG: Als Widget, nicht als Window
         nav_container.setFixedHeight(60)
         nav_container.setStyleSheet("""
             QWidget {
@@ -711,31 +746,39 @@ class SingleView(QWidget):
     def load_image(self, path: str):
         self._log.info("image_load", extra={"event": "image_load", "path": path})
         
-        # Prüfe Cache zuerst
-        if path in self._image_cache:
+        # Prüfe ob Datei existiert und nicht leer ist
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            self._log.warning("image_load_skipped_invalid", extra={"event": "image_load_skipped_invalid", "path": path})
+            # Verwende leeres Pixmap für defekte Dateien
+            pix = QPixmap()
+        # Prüfe Cache zuerst (schnellster Weg)
+        elif path in self._image_cache:
             pix = self._image_cache[path]
         else:
+            # WICHTIG: Einzelbild-Ansicht lädt immer Original-Qualität ohne Kompression!
             pix = QPixmap(path)
-            # In Cache speichern
-            self._image_cache[path] = pix
+            # In Cache speichern (nur wenn gültig)
+            if not pix.isNull():
+                self._image_cache[path] = pix
         
+        # Bild sofort anzeigen (höchste Priorität)
         scene = self.view.scene()
-        scene.clear()
-        if not pix.isNull():
-            self.view.set_pixmap(pix)
-            # Automatische OCR entfernt - nur manuelle Bearbeitung erlaubt
+        if scene:
+            scene.clear()
+            if not pix.isNull():
+                self.view.set_pixmap(pix)
         
-        # Sofort UI aktualisieren (für instant Feedback)
+        # UI sofort aktualisieren (für instant Feedback)
         self.currentImageChanged.emit(path)
         self._update_labels()
         self._update_nav()
         self._update_action_tooltips()
         
-        # ALLES andere asynchron laden
+        # ALLES andere asynchron laden (nicht blockierend)
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: self._load_image_details(path))
         
-        # Precaching im Hintergrund starten
+        # Precaching im Hintergrund starten (niedrigere Priorität)
         QTimer.singleShot(100, self._precache_adjacent_images)
     
     def _load_image_details(self, path: str):
@@ -778,32 +821,71 @@ class SingleView(QWidget):
             o = {}
         
         try:
-            if 'tag' in o:
-                if 'confidence' in o:
-                    self.ocr_label.setText(f"{o['tag']} ({o.get('confidence', 0):.2f})")
-                else:
-                    self.ocr_label.setText(o['tag'])
-                self.view.set_ocr_label(self._tag_with_heading(o['tag']))
+            raw_tag = str(o.get('tag', '')).strip() if isinstance(o, dict) else ''
+            if raw_tag:
+                display_tag = raw_tag.upper()
+                self.ocr_label.setText(display_tag)
+                self.view.set_ocr_label(self._tag_with_heading(display_tag))
             else:
-                self.ocr_label.setText('—')
-                self.view.set_ocr_label('—')
+                display_tag = "—"
+                self.ocr_label.setText(display_tag)
+                self.view.set_ocr_label("")
+            self._update_ocr_header_display(display_tag)
         except Exception:
             self.ocr_label.setText('—')
-            self.view.set_ocr_label('—')
+            self.view.set_ocr_label("")
+            self._update_ocr_header_display("")
         
         # Zeichnungen laden
         try:
+            # Versuche zuerst aus Metadaten zu laden
             drawings_data = md.get('drawings', [])
+            
+            # Falls keine Zeichnungen in Metadaten, versuche Cache
+            if not drawings_data and path in self._drawings_cache:
+                drawings_data = self._drawings_cache[path]
+                self._log.info('drawings_loaded_from_cache', extra={'count': len(drawings_data), 'path': path})
+            
+            # Lade Zeichnungen in Drawing Manager
             if drawings_data and hasattr(self.view, 'drawing_manager') and self.view.drawing_manager:
                 self.view.drawing_manager.load_drawings_data(drawings_data)
+                # Aktualisiere Cache mit geladenen Daten
+                self._drawings_cache[path] = drawings_data.copy() if isinstance(drawings_data, list) else []
                 self._log.info('drawings_loaded', extra={'count': len(drawings_data), 'path': path})
-        except Exception:
-            pass
+            elif hasattr(self.view, 'drawing_manager') and self.view.drawing_manager:
+                # Keine Zeichnungen vorhanden: leere Liste im Cache speichern
+                self._drawings_cache[path] = []
+        except Exception as e:
+            # Bei Fehler: versuche Cache
+            try:
+                if path in self._drawings_cache and hasattr(self.view, 'drawing_manager') and self.view.drawing_manager:
+                    cached_drawings = self._drawings_cache[path]
+                    if cached_drawings:
+                        self.view.drawing_manager.load_drawings_data(cached_drawings)
+                        self._log.info('drawings_loaded_from_cache_after_error', extra={'count': len(cached_drawings), 'path': path, 'error': str(e)})
+            except Exception:
+                pass
 
     def select_image(self, path: str):
-        # Speichern asynchron im Hintergrund
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, self._save_current_exif)
+        # Speichere aktuelles Bild sofort (mit Cache-Layer falls verfügbar)
+        current_path = self._current_path()
+        if current_path and self._cache_layer:
+            # Flushe pending changes für aktuelles Bild asynchron im Hintergrund
+            # (vermeidet UI-Blockierung bei langsamem EXIF-Schreiben)
+            # WICHTIG: Erstelle lokale Kopie des Pfads, um Race Condition zu vermeiden
+            path_to_flush = current_path
+            from PySide6.QtCore import QTimer
+            def _flush_async():
+                try:
+                    # Verwende lokale Kopie, nicht self._current_path() (könnte sich geändert haben)
+                    self._cache_layer.flush_to_exif(path_to_flush)
+                except Exception:
+                    pass
+            QTimer.singleShot(0, _flush_async)
+        else:
+            # Fallback: Normales Speichern asynchron im Hintergrund
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._save_current_exif)
         
         # Stelle sicher, dass der Ordner gesetzt ist und der Index stimmt
         folder = os.path.dirname(path)
@@ -816,6 +898,10 @@ class SingleView(QWidget):
             pass
         # Bild sofort laden (ohne zu warten)
         self.load_image(path)
+    
+    def set_cache_layer(self, cache_layer):
+        """Setzt den Cache-Layer (wird von MainWindow aufgerufen)"""
+        self._cache_layer = cache_layer
 
     def _edit_ocr_tag(self):
         # Öffnet den Dialog, trägt Änderungen in EXIF ein und aktualisiert Overlay/Label
@@ -825,21 +911,60 @@ class SingleView(QWidget):
         try:
             from .dialogs import OcrEditDialog
             info = get_ocr_info(path)
-            dlg = OcrEditDialog(self, tag=info.get('tag', ''), confidence=info.get('confidence'))
-            if dlg.exec() == dlg.Accepted:
+            dlg = OcrEditDialog(self, tag=info.get('tag', ''))
+            if dlg.exec() == QDialog.Accepted:
                 tag = dlg.result_tag()
-                conf = dlg.result_confidence()
-                set_ocr_info(path, tag=tag, confidence=conf)
+                # Tag normalisieren: Leerstring oder nur Whitespace = None (kein Tag)
+                tag_clean = tag.strip() if tag else ""
+                tag_value = tag_clean.upper() if tag_clean else None
+                
+                # Speichere in EXIF (None -> Tag entfernen)
+                try:
+                    if not set_ocr_info(path, tag=tag_value):
+                        raise Exception("set_ocr_info returned False - Tag konnte nicht gespeichert werden")
+                    display_tag = tag_value if tag_value else "—"
+                    if tag_value:
+                        self._log.info("ocr_tag_updated", extra={"path": path, "tag": tag_value})
+                    else:
+                        self._log.info("ocr_tag_removed", extra={"path": path})
+                except Exception as save_error:
+                    self._log.error("ocr_tag_save_failed", extra={"error": str(save_error), "path": path, "tag": tag_value})
+                    QMessageBox.warning(self, "Fehler", f"OCR-Tag konnte nicht gespeichert werden:\n{save_error}")
+                    return
+                
+                # WICHTIG: Cache invalidierten, damit neuer Tag sofort sichtbar ist
+                window = self.window()
+                if window and hasattr(window, 'evaluation_cache') and window.evaluation_cache:
+                    try:
+                        window.evaluation_cache.update_image_tag(path, tag_value if tag_value else '')
+                        window.evaluation_cache.invalidate()
+                    except Exception:
+                        pass
+                
                 # UI aktualisieren (Label und Overlay)
-                self.ocr_label.setText(f"{tag} ({conf:.2f})")
-                self.view.set_ocr_label(self._tag_with_heading(tag))
+                if display_tag != "—":
+                    self.ocr_label.setText(display_tag)
+                    self.view.set_ocr_label(self._tag_with_heading(display_tag))
+                else:
+                    self.ocr_label.setText("—")
+                    self.view.set_ocr_label("")
+                
+                # Header-Anzeige aktualisieren
+                self._update_ocr_header_display(display_tag)
+                
+                # View und Scene explizit aktualisieren, damit Overlay sofort sichtbar ist
+                if hasattr(self.view, 'viewport'):
+                    self.view.viewport().update()
+                if hasattr(self.view, 'scene') and self.view.scene():
+                    self.view.scene().update()
+                
                 # Galerie informieren
                 try:
                     self.ocrTagUpdated.emit(path)
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            self._log.error("edit_ocr_tag_failed", extra={"error": str(e), "path": path})
 
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Ordner öffnen", "")
@@ -851,8 +976,17 @@ class SingleView(QWidget):
         # Beim Ordnerwechsel ggf. aktuelle Bewertung sichern
         self._save_current_exif()
         
-        # Cache leeren bei Ordnerwechsel
+        # Cache leeren bei Ordnerwechsel (verhindert Memory Leak)
         self._image_cache.clear()
+        
+        # Bereinige auch Cache-Layer für alten Ordner (verhindert RAM-Überlauf)
+        if self._cache_layer:
+            try:
+                # Entferne alle Einträge die nicht mehr existieren
+                # (wird automatisch beim nächsten Zugriff bereinigt)
+                pass  # clear_cache() würde alle löschen, was zu aggressiv ist
+            except Exception:
+                pass
         
         exts = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff'}
         files = [os.path.join(folder, f) for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in exts]
@@ -870,7 +1004,8 @@ class SingleView(QWidget):
         
         self._update_labels()
         self._log.info("folder_open", extra={"event": "folder_open", "folder": folder, "count": total})
-        if total:
+        # WICHTIG: Lade immer das erste Bild, wenn ein Ordner ausgewählt ist und Bilder vorhanden sind
+        if total > 0:
             self.load_image(files[0])
         else:
             if self._evaluation_panel:
@@ -1050,11 +1185,7 @@ class SingleView(QWidget):
         if result.get('path') != path_now:
             return
         txt = result.get('text') or "—"
-        conf = result.get('confidence')
-        if conf is not None:
-            self.ocr_label.setText(f"{txt} ({conf:.2f})")
-        else:
-            self.ocr_label.setText(str(txt))
+        self.ocr_label.setText(str(txt))
         box = result.get('box')
         if box:
             try:
@@ -1069,8 +1200,8 @@ class SingleView(QWidget):
             pass
         # Auto-Speichern in EXIF
         try:
-            set_ocr_info(path_now, tag=txt if txt and txt != '—' else None, confidence=conf, box=box)
-            self._log.info("ocr_tag_saved", extra={"event": "ocr_tag_saved", "path": path_now, "tag": txt, "conf": conf})
+            set_ocr_info(path_now, tag=txt if txt and txt != '—' else None, box=box)
+            self._log.info("ocr_tag_saved", extra={"event": "ocr_tag_saved", "path": path_now, "tag": txt})
         except Exception:
             pass
 
@@ -1107,17 +1238,105 @@ class SingleView(QWidget):
     def _update_nav(self):
         total = len(self._image_paths)
         has = total > 0 and self._current_index >= 0
-        self.btn_prev.setEnabled(has and self._current_index > 0)
-        self.btn_next.setEnabled(has and self._current_index < total - 1)
-        if hasattr(self, 'nav_container') and self.nav_container:
-            self.nav_container.setVisible(has)
+        
+        # Navigation aktiv halten (egal in welcher Position)
+        nav_position = self.settings_manager.get("navigation_position", "below") or "below"
+        active_container = self.nav_container
+        
+        if active_container:
+            if hasattr(active_container, 'btn_prev'):
+                active_container.btn_prev.setEnabled(has and self._current_index > 0)
+            if hasattr(active_container, 'btn_next'):
+                active_container.btn_next.setEnabled(has and self._current_index < total - 1)
+            active_container.setVisible(has)
+        if self.nav_below_wrapper:
+            self.nav_below_wrapper.setVisible(has and nav_position == "below")
+    
+    def _on_settings_changed(self, settings_dict):
+        """Wird aufgerufen wenn Settings geändert werden"""
+        if "navigation_position" in settings_dict:
+            self._update_navigation_position()
+    
+    def _update_navigation_position(self):
+        """Aktualisiert die Navigation-Position basierend auf Settings"""
+        nav_position = str(self.settings_manager.get("navigation_position", "below") or "below")
+
+        if not self.nav_container:
+            return
+
+        # Temporär ausblenden, damit keine Artefakte sichtbar sind
+        self.nav_container.hide()
+
+        if nav_position == "overlay":
+            # Entferne ggf. vorhandenen Wrapper aus dem Layout
+            if self.nav_below_wrapper:
+                v = self.layout()
+                if v:
+                    v.removeWidget(self.nav_below_wrapper)
+                self.nav_below_wrapper.deleteLater()
+                self.nav_below_wrapper = None
+
+            # Navigation als Overlay in der View platzieren
+            if self.view:
+                self.nav_container.setParent(self.view)
+                self.nav_container.setWindowFlags(Qt.WindowType.Widget)
+                self.nav_container.raise_()
+                self.nav_container.show()
+                self._position_overlay_navigation()
+
+            self._update_nav()
+            return
+
+        # Fallback auf "below" für unbekannte Werte
+        if nav_position not in ["overlay", "below"]:
+            nav_position = "below"
+            self.settings_manager.set("navigation_position", "below")
+
+        # Navigation unter dem Bild einfügen (zentriert)
+        v = self.layout()
+        if v:
+            # Entferne bestehenden Wrapper, um ihn frisch aufzubauen
+            if self.nav_below_wrapper:
+                v.removeWidget(self.nav_below_wrapper)
+                self.nav_below_wrapper.deleteLater()
+                self.nav_below_wrapper = None
+
+            self.nav_below_wrapper = QWidget()
+            nav_wrapper_layout = QHBoxLayout(self.nav_below_wrapper)
+            nav_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            nav_wrapper_layout.addStretch()
+            nav_wrapper_layout.addWidget(self.nav_container)
+            nav_wrapper_layout.addStretch()
+
+            # Parent/Flags setzen, damit Widget normal im Layout geführt wird
+            self.nav_container.setParent(self.nav_below_wrapper)
+            self.nav_container.setWindowFlags(Qt.WindowType.Widget)
+
+            if hasattr(self, 'desc_group') and self.desc_group is not None:
+                desc_group_idx = -1
+                for i in range(v.count()):
+                    item = v.itemAt(i)
+                    if item and item.widget() == self.desc_group:
+                        desc_group_idx = i
+                        break
+                if desc_group_idx >= 0:
+                    v.insertWidget(desc_group_idx, self.nav_below_wrapper)
+                else:
+                    v.addWidget(self.nav_below_wrapper)
+            else:
+                v.addWidget(self.nav_below_wrapper)
+
+            self.nav_container.show()
+            self.nav_below_wrapper.show()
+
+        self._update_nav()
 
     def next_image(self):
         total = len(self._image_paths)
         if total == 0 or self._current_index >= total - 1:
             return
-        # Speichere aktuelle Metadaten vor dem Wechsel
-        self._save_current_exif()
+        # Speichere aktuelle Metadaten asynchron im Hintergrund (nicht blockierend)
+        self._save_current_exif_async()
         self._current_index += 1
         self.load_image(self._image_paths[self._current_index])
 
@@ -1125,21 +1344,24 @@ class SingleView(QWidget):
         total = len(self._image_paths)
         if total == 0 or self._current_index <= 0:
             return
-        self._save_current_exif()
+        # Speichere aktuelle Metadaten asynchron im Hintergrund (nicht blockierend)
+        self._save_current_exif_async()
         self._current_index -= 1
         self.load_image(self._image_paths[self._current_index])
 
     def first_image(self):
         if not self._image_paths:
             return
-        self._save_current_exif()
+        # Speichere aktuelle Metadaten asynchron im Hintergrund (nicht blockierend)
+        self._save_current_exif_async()
         self._current_index = 0
         self.load_image(self._image_paths[self._current_index])
 
     def last_image(self):
         if not self._image_paths:
             return
-        self._save_current_exif()
+        # Speichere aktuelle Metadaten asynchron im Hintergrund (nicht blockierend)
+        self._save_current_exif_async()
         self._current_index = len(self._image_paths) - 1
         self.load_image(self._image_paths[self._current_index])
 
@@ -1156,6 +1378,9 @@ class SingleView(QWidget):
         if 0 <= self._current_index < len(self._image_paths):
             return self._image_paths[self._current_index]
         return None
+    
+    def current_path(self) -> str | None:
+        return self._current_path()
     
     def _precache_adjacent_images(self):
         """Lädt benachbarte Bilder im Hintergrund vor"""
@@ -1217,8 +1442,6 @@ class SingleView(QWidget):
             else:
                 self.btn_gene.setToolTip(base)
 
-        if hasattr(self, 'btn_metadata') and self.btn_metadata:
-            self.btn_metadata.setToolTip(f"EXIF-JSON anzeigen\n{path}" if path else "EXIF-JSON anzeigen")
         if hasattr(self, 'use_header_toggle') and self.use_header_toggle:
             base = "Bild verwenden"
             if path:
@@ -1260,6 +1483,9 @@ class SingleView(QWidget):
         layout.addWidget(buttons)
 
         dialog.exec()
+
+    def show_metadata_popup(self):
+        self._show_metadata_popup()
 
     def _refresh_gene_button(self, value: bool | None = None):
         if not hasattr(self, 'btn_gene') or not self.btn_gene:
@@ -1354,6 +1580,28 @@ class SingleView(QWidget):
                 pass
         self._refresh_use_toggle(new_state)
 
+    def _save_current_exif_async(self):
+        """Speichert aktuelle Metadaten asynchron im Hintergrund (nicht blockierend für Navigation)"""
+        path = self._current_path()
+        if not path:
+            return
+        
+        # Verwende Cache-Layer falls verfügbar (schneller)
+        if self._cache_layer:
+            # Flushe pending changes für aktuelles Bild asynchron im Hintergrund
+            path_to_flush = path
+            from PySide6.QtCore import QTimer
+            def _flush_async():
+                try:
+                    self._cache_layer.flush_to_exif(path_to_flush)
+                except Exception:
+                    pass
+            QTimer.singleShot(0, _flush_async)
+        else:
+            # Fallback: Normales Speichern asynchron im Hintergrund
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._save_current_exif)
+    
     def _save_current_exif(self):
         path = self._current_path()
         if not path:
@@ -1404,76 +1652,278 @@ class SingleView(QWidget):
             return False
     
     def _save_current_drawings(self):
-        """Speichert Zeichnungen in EXIF (Backup-Erstellung deaktiviert für Performance)"""
+        """Persistiert Zeichnungen, erstellt Sicherung und exportiert annotiertes Bild."""
         path = self._current_path()
-        if not path or not hasattr(self.view, 'drawing_manager') or not self.view.drawing_manager:
+        manager = getattr(self.view, 'drawing_manager', None)
+        if not path or not manager:
             return
-        
+
         # Stoppe laufenden Timer (wir speichern jetzt sofort)
         if hasattr(self, '_drawing_timer') and self._drawing_timer.isActive():
             self._drawing_timer.stop()
-        
+
         try:
-            drawings_data = self.view.drawing_manager.get_drawings_data()
-            if drawings_data:
-                # Speichere nur Zeichnungsdaten in EXIF (schnell)
-                # Backup-Bild-Rendering ist zu langsam und wird deaktiviert
-                from utils_exif import update_metadata
-                from PySide6.QtCore import QTimer
-                # Asynchron speichern um UI nicht zu blockieren
-                QTimer.singleShot(0, lambda: update_metadata(path, {'drawings': drawings_data}))
-                self._log.info("drawing_save_scheduled", extra={"event": "drawing_save_scheduled", "path": path})
+            drawings_data = manager.get_drawings_data() or []
+            # Deep-Copy der Daten, damit spätere Änderungen den Save nicht beeinflussen
+            payload = [dict(item) for item in drawings_data]
+
+            from PySide6.QtCore import QTimer
+
+            # Neuesten Save-Request merken (überschreibt ältere, falls mehrere kurz hintereinander kommen)
+            self._pending_drawing_task = (path, payload)
+
+            if not self._drawing_flush_scheduled:
+                self._drawing_flush_scheduled = True
+                QTimer.singleShot(0, self._flush_pending_drawings)
+
+            self._log.info(
+                "drawing_save_scheduled",
+                extra={"event": "drawing_save_scheduled", "path": path, "count": len(payload)},
+            )
         except Exception as e:
             self._log.error("drawing_save_failed", extra={"error": str(e), "path": path})
 
-    def _save_drawing_backup(self, original_path: str):
-        """Erstellt ein Backup-Bild mit eingezeichneten Elementen"""
+    def _flush_pending_drawings(self):
+        """Verarbeitet gespeicherte Zeichnungen sequentiell, um Überschneidungen zu vermeiden."""
+        self._drawing_flush_scheduled = False
+        task = self._pending_drawing_task
+        self._pending_drawing_task = None
+
+        if not task:
+            return
+
+        path, payload = task
+        self._drawing_save_in_progress = True
         try:
-            import os
+            self._persist_drawings(path, payload)
+        finally:
+            self._drawing_save_in_progress = False
+            # Falls während des Speicherns neue Zeichnungen eingegangen sind: sofort erneut flushen
+            if self._pending_drawing_task:
+                from PySide6.QtCore import QTimer
+
+                if not self._drawing_flush_scheduled:
+                    self._drawing_flush_scheduled = True
+                    QTimer.singleShot(0, self._flush_pending_drawings)
+
+    def _persist_drawings(self, path: str, drawings: list[dict]):
+        if not path:
+            return
+
+        # Aktualisiere Cache sofort (auch wenn Speichern später fehlschlägt)
+        self._drawings_cache[path] = [dict(item) for item in drawings] if drawings else []
+
+        # Sicherung des Originalbilds (einmalig)
+        try:
+            backup_path = self._ensure_original_backup(path)
+            if backup_path:
+                self._log.info(
+                    "image_backup_created",
+                    extra={"event": "image_backup_created", "original": path, "backup": backup_path},
+                )
+        except Exception as e:
+            self._log.error(
+                "image_backup_failed", extra={"error": str(e), "path": path}
+            )
+
+        # Aktuelle Metadaten sichern, damit sie nach dem Export wiederhergestellt werden können
+        metadata_snapshot = {}
+        metadata_read_success = False
+        try:
+            md = read_metadata(path)
+            if isinstance(md, dict):
+                metadata_snapshot = md.copy()
+                metadata_read_success = True
+            else:
+                metadata_snapshot = {}
+        except Exception as e:
+            self._log.error("drawing_metadata_read_failed", extra={"error": str(e), "path": path})
+            metadata_snapshot = {}
+
+        if drawings:
+            metadata_snapshot["drawings"] = [dict(item) for item in drawings]
+        else:
+            metadata_snapshot.pop("drawings", None)
+
+        # Annotiertes Bild exportieren und anschließend Metadaten wiederherstellen
+        if drawings:
+            try:
+                panel = getattr(self, '_evaluation_panel', None)
+                if panel and hasattr(panel, 'get_state'):
+                    state = panel.get_state()
+                    if not state.get('use', False) and hasattr(panel, 'set_use'):
+                        panel.set_use(True)
+            except Exception:
+                pass
+            temp_path = None
+            try:
+                _, ext = os.path.splitext(path)
+                fd, temp_path = tempfile.mkstemp(suffix=ext or ".jpg", dir=os.path.dirname(path))
+                os.close(fd)
+            except Exception as e:
+                self._log.error("annotated_image_temp_failed", extra={"error": str(e), "path": path})
+                return
+
+            annotated_path = self._export_annotated_image(path, target_path=temp_path)
+            if annotated_path and os.path.exists(annotated_path):
+                self._log.info(
+                    "annotated_image_saved",
+                    extra={
+                        "event": "annotated_image_saved",
+                        "original": path,
+                        "annotated": annotated_path,
+                    },
+                )
+                metadata_ok = False
+                try:
+                    metadata_ok = write_metadata(annotated_path, metadata_snapshot)
+                except Exception as e:
+                    self._log.error("drawing_metadata_write_failed", extra={"error": str(e), "path": path})
+                    metadata_ok = False
+
+                if not metadata_ok:
+                    try:
+                        os.remove(annotated_path)
+                    except Exception:
+                        pass
+                    self._log.error(
+                        "drawing_metadata_failed",
+                        extra={"event": "drawing_metadata_failed", "path": path},
+                    )
+                    return
+
+                try:
+                    os.replace(annotated_path, path)
+                except Exception as e:
+                    self._log.error("annotated_image_replace_failed", extra={"error": str(e), "path": path})
+                    try:
+                        os.remove(annotated_path)
+                    except Exception:
+                        pass
+                    return
+
+                self._log.info(
+                    "annotated_image_committed",
+                    extra={"event": "annotated_image_committed", "path": path},
+                )
+                self._refresh_after_image_update(path)
+            else:
+                self._log.error(
+                    "annotated_image_failed",
+                    extra={"event": "annotated_image_failed", "path": path},
+                )
+                if annotated_path and os.path.exists(annotated_path):
+                    try:
+                        os.remove(annotated_path)
+                    except Exception:
+                        pass
+        else:
+            # Keine Zeichnungen: Metadaten ggf. aktualisieren (z. B. Löschen des Drawings-Blocks)
+            try:
+                if metadata_read_success:
+                    write_metadata(path, metadata_snapshot)
+            except Exception as e:
+                self._log.error("drawing_metadata_write_failed", extra={"error": str(e), "path": path})
+
+    def _ensure_original_backup(self, image_path: str) -> str | None:
+        if not image_path:
+            return None
+
+        if image_path in self._original_backup_paths:
+            return None
+
+        directory = os.path.dirname(image_path)
+        filename = os.path.basename(image_path)
+        backup_dir_name = self.settings_manager.get("paths_backup_directory", "Backups") or "Backups"
+        backup_dir = os.path.join(directory, backup_dir_name)
+        os.makedirs(backup_dir, exist_ok=True)
+
+        backup_path = os.path.join(backup_dir, filename)
+        if os.path.exists(backup_path):
+            self._original_backup_paths.add(image_path)
+            return backup_path
+
+        shutil.copy2(image_path, backup_path)
+        self._original_backup_paths.add(image_path)
+        return backup_path
+
+    def _export_annotated_image(self, original_path: str, *, target_path: str | None = None) -> str | None:
+        try:
             from PySide6.QtGui import QImage, QPainter
-            from datetime import datetime
-            
-            # Backup-Verzeichnis erstellen
-            backup_dir = os.path.join(os.path.dirname(original_path), "Annotiert")
-            os.makedirs(backup_dir, exist_ok=True)
-            
-            # Backup-Dateiname mit Zeitstempel
-            base_name = os.path.basename(original_path)
-            name_without_ext = os.path.splitext(base_name)[0]
-            ext = os.path.splitext(base_name)[1]
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"{name_without_ext}_annotiert_{timestamp}{ext}"
-            backup_path = os.path.join(backup_dir, backup_name)
-            
-            # Scene als Bild rendern
+
             scene = self.view.scene()
-            if scene and scene.items():
-                # Bounding Rect der Scene
-                rect = scene.itemsBoundingRect()
-                
-                # QImage erstellen
+            if not scene or not scene.items():
+                return None
+
+            rect = scene.itemsBoundingRect()
+            if rect.isNull() or rect.width() <= 0 or rect.height() <= 0:
+                return None
+
+            # Overlay (OCR-Tag) temporär ausblenden, damit er nicht eingebrannt wird
+            hidden_items = self.view.begin_export_without_overlay()
+            try:
                 image = QImage(int(rect.width()), int(rect.height()), QImage.Format_RGB32)
                 image.fill(Qt.white)
-                
-                # Scene auf Image rendern
+
                 painter = QPainter(image)
                 painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
                 scene.render(painter, target=image.rect(), source=rect)
                 painter.end()
-                
-                # Bild speichern
-                if image.save(backup_path):
-                    self._log.info("drawing_backup_saved", extra={
-                        "event": "drawing_backup_saved",
-                        "original": original_path,
-                        "backup": backup_path
-                    })
-                    return backup_path
-            
-            return None
+            finally:
+                self.view.end_export_without_overlay(hidden_items)
+
+            destination = target_path or original_path
+            ext = os.path.splitext(destination)[1].lower()
+            if ext in {".jpg", ".jpeg"}:
+                if not image.save(destination, "JPEG", 95):
+                    return None
+            else:
+                if not image.save(destination):
+                    return None
+
+            return destination
         except Exception as e:
-            self._log.error("drawing_backup_failed", extra={"error": str(e), "path": original_path})
+            self._log.error("annotated_image_exception", extra={"error": str(e), "path": original_path})
             return None
+
+    def _refresh_after_image_update(self, path: str):
+        if not path:
+            return
+
+        try:
+            if path in self._image_cache:
+                del self._image_cache[path]
+        except Exception:
+            pass
+
+        try:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                self._image_cache[path] = pix
+                if hasattr(self.view, 'set_pixmap'):
+                    self.view.set_pixmap(pix, reset=False)
+                    # Overlay nach dem erneuten Laden sicherstellen
+                    current_tag = self.ocr_label.text() if hasattr(self, 'ocr_label') else ''
+                    if current_tag and current_tag.strip() and current_tag.strip() != "—":
+                        self.view.set_ocr_label(self._tag_with_heading(current_tag.strip()))
+                    else:
+                        self.view.set_ocr_label("")
+        except Exception as e:
+            self._log.error("image_reload_failed", extra={"error": str(e), "path": path})
+
+        try:
+            if hasattr(self.view, 'viewport'):
+                self.view.viewport().update()
+        except Exception:
+            pass
+
+        try:
+            window = self.window()
+            gallery = getattr(window, 'gallery', None) if window else None
+            if gallery and hasattr(gallery, 'refresh_item'):
+                gallery.refresh_item(path, emit_signal=False, delay_ms=0)
+        except Exception:
+            pass
     
     def _stop_ocr_thread(self):
         try:
@@ -1521,27 +1971,49 @@ class SingleView(QWidget):
     def _show_text_snippets(self):
         """Zeigt Dialog mit Textbausteinen für aktuelles OCR-Tag"""
         try:
-            # Hole aktuelles OCR-Tag
             current_tag = ""
             path = self._current_path()
             if path:
                 ocr_info = get_ocr_info(path)
                 current_tag = ocr_info.get('tag', '') if ocr_info else ''
-            
-            # Hole Textbausteine für dieses Tag
-            snippets = self.settings_manager.get('text_snippets', {})
-            tag_snippets = snippets.get(current_tag, []) if current_tag else []
-            
-            # Fallback: Zeige alle verfügbaren Textbausteine wenn keine für Tag vorhanden
-            if not tag_snippets:
-                # Sammle alle Textbausteine
-                all_snippets = []
-                for tag, texts in snippets.items():
+
+            config = self.settings_manager.get_text_snippet_config()
+            tag_map = config.get('tags', {})
+            groups_map = config.get('groups', {})
+
+            current_key = current_tag.strip().upper() if current_tag else ''
+
+            entries = []
+            if current_key:
+                for text in tag_map.get(current_key, []):
+                    entries.append({
+                        'source': f"Tag {current_key}",
+                        'value': text
+                    })
+                for group_name, data in groups_map.items():
+                    tags = [t.upper() for t in data.get('tags', [])]
+                    if current_key in tags:
+                        for text in data.get('snippets', []):
+                            entries.append({
+                                'source': f"Gruppe {group_name}",
+                                'value': text
+                            })
+
+            if not entries:
+                for tag_code, texts in tag_map.items():
                     for text in texts:
-                        all_snippets.append(f"[{tag}] {text}")
-                tag_snippets = all_snippets
-            
-            if not tag_snippets:
+                        entries.append({
+                            'source': f"Tag {tag_code}",
+                            'value': text
+                        })
+                for group_name, data in groups_map.items():
+                    for text in data.get('snippets', []):
+                        entries.append({
+                            'source': f"Gruppe {group_name}",
+                            'value': text
+                        })
+
+            if not entries:
                 QMessageBox.information(
                     self, "Keine Textbausteine",
                     "Keine Textbausteine definiert.\n\n"
@@ -1549,22 +2021,11 @@ class SingleView(QWidget):
                 )
                 return
             
-            # Zeige Auswahl-Dialog
-            from PySide6.QtWidgets import QInputDialog
-            snippet, ok = QInputDialog.getItem(
-                self, "Textbaustein einfügen",
-                f"Textbaustein für '{current_tag}' auswählen:",
-                tag_snippets,
-                0,
-                False
-            )
-            
-            if ok and snippet:
-                # Entferne [TAG] Prefix falls vorhanden
-                if snippet.startswith('[') and '] ' in snippet:
-                    snippet = snippet.split('] ', 1)[1]
-                
-                # Füge Text ein
+            dialog = TextSnippetPickerDialog(self, current_tag, entries)
+            if dialog.exec() == dialog.Accepted:
+                snippet = dialog.selected_snippet()
+                if not snippet:
+                    return
                 current_text = self.notes_edit.toPlainText()
                 if current_text.strip():
                     # Hänge an bestehenden Text an
@@ -1633,6 +2094,70 @@ class SingleView(QWidget):
         # Andere Tasten normal verarbeiten
         super().keyPressEvent(event)
 
+    def _position_overlay_navigation(self):
+        """Positioniert die Navigation als Overlay zentriert unter dem Bild."""
+        if not self.view or not self.nav_container:
+            return
+
+        try:
+            self.nav_container.adjustSize()
+            nav_width = self.nav_container.width()
+            x = (self.view.width() - nav_width) / 2
+            y = self.view.height() - self.nav_container.height() - 20
+            self.nav_container.move(x, y)
+            self.nav_container.raise_()
+        except Exception:
+            pass
+
+
+class TextSnippetPickerDialog(QDialog):
+    def __init__(self, parent, current_tag: str, entries: list[dict]):
+        super().__init__(parent)
+        self.setWindowTitle("Textbaustein einfügen")
+        self._entries = entries
+
+        layout = QVBoxLayout(self)
+
+        label_tag = current_tag if current_tag else "—"
+        description = QLabel(f"Textbausteine für '{label_tag}' auswählen:")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.table = QTableWidget(len(entries), 2)
+        self.table.setHorizontalHeaderLabels(["Quelle", "Text"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+
+        for row, entry in enumerate(entries):
+            source_item = QTableWidgetItem(entry.get('source', ''))
+            text_item = QTableWidgetItem(entry.get('value', ''))
+            self.table.setItem(row, 0, source_item)
+            self.table.setItem(row, 1, text_item)
+
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setMinimumWidth(420)
+        self.table.setMinimumHeight(240)
+        layout.addWidget(self.table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.table.itemDoubleClicked.connect(lambda *_: self.accept())
+        if entries:
+            self.table.selectRow(0)
+
+    def selected_snippet(self) -> str | None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._entries):
+            return None
+        return self._entries[row].get('value')
+
 
 class ImageView(QGraphicsView):
     def __init__(self):
@@ -1645,6 +2170,7 @@ class ImageView(QGraphicsView):
         self._tag_item = None
         self._tag_bg_item = None
         self._context_edit_callback = None
+        self._pix_item = None
         
         # SettingsManager für Tag-Größe und Transparenz
         from .settings_manager import get_settings_manager
@@ -1658,13 +2184,75 @@ class ImageView(QGraphicsView):
         # Zoom-Tracking
         self._zoom_factor = 1.0
         self.zoom_label = None  # Wird von außen gesetzt
+        self._manual_zoom_active = False  # Flag: Wurde manuell gezoomt (nicht durch fit_to_view)
+        self._zoom_mode = "fit_to_view"  # "fit_to_view", "1:1", oder "manual"
 
-    def set_pixmap(self, pix: QPixmap):
+    def set_pixmap(self, pix: QPixmap, *, reset: bool = True):
         self._pix = pix
         sc = self.scene()
-        sc.clear()
-        sc.addPixmap(pix)
-        self.fit_to_view()
+        if not sc:
+            return
+
+        if reset or self._pix_item is None:
+            sc.clear()
+            self._pix_item = sc.addPixmap(pix)
+            if self._pix_item:
+                self._pix_item.setZValue(-100)
+        else:
+            try:
+                if self._pix_item:
+                    self._pix_item.setPixmap(pix)
+            except Exception:
+                # Fallback: vollständiger Reset
+                sc.clear()
+                self._pix_item = sc.addPixmap(pix)
+                if self._pix_item:
+                    self._pix_item.setZValue(-100)
+        
+        # Zoom-Modus beibehalten beim Wechseln der Bilder
+        if self._zoom_mode == "1:1":
+            # 1:1 Zoom beibehalten - verwende die gleiche Logik wie reset_zoom()
+            self.resetTransform()
+            # Verwende fit_to_view() als Basis (wie in reset_zoom())
+            rect = sc.itemsBoundingRect()
+            if rect.isValid():
+                self.fitInView(rect, Qt.KeepAspectRatio)
+                view_rect = self.viewport().rect()
+                scene_rect = self.sceneRect()
+                if scene_rect.width() > 0 and scene_rect.height() > 0:
+                    scale_x = view_rect.width() / scene_rect.width()
+                    scale_y = view_rect.height() / scene_rect.height()
+                    fit_scale = min(scale_x, scale_y) * 0.95  # 95% für Margin (wie in reset_zoom())
+                    # Für 1:1: Wir müssen relativ zu fit_scale skalieren
+                    # 1:1 bedeutet: zoom_to_original / fit_scale
+                    target_relative_zoom = 1.0 / fit_scale if fit_scale > 0 else 1.0
+                    self.scale(target_relative_zoom, target_relative_zoom)
+                    self._zoom_factor = target_relative_zoom
+                    self._update_zoom_label()
+                    # Zentriere das Bild
+                    if self._pix:
+                        self.centerOn(self._pix.width() / 2, self._pix.height() / 2)
+                    # Zoom-Modus bleibt "1:1" (nicht zurücksetzen)
+        elif self._zoom_mode == "manual" and self._zoom_factor != 1.0:
+            # Manueller Zoom beibehalten
+            self.resetTransform()
+            rect = sc.itemsBoundingRect()
+            if rect.isValid():
+                self.fitInView(rect, Qt.KeepAspectRatio)
+                view_rect = self.viewport().rect()
+                scene_rect = self.sceneRect()
+                if scene_rect.width() > 0 and scene_rect.height() > 0:
+                    scale_x = view_rect.width() / scene_rect.width()
+                    scale_y = view_rect.height() / scene_rect.height()
+                    fit_scale = min(scale_x, scale_y) * 0.95
+                    target_scale = self._zoom_factor / fit_scale if fit_scale > 0 else self._zoom_factor
+                    self.scale(target_scale, target_scale)
+                    self._update_zoom_label()
+        else:
+            # Standard: fit_to_view beim Laden eines neuen Bildes
+            self._zoom_mode = "fit_to_view"
+            self._manual_zoom_active = False
+            self.fit_to_view()
 
     def set_box(self, x: int, y: int, w: int, h: int):
         sc = self.scene()
@@ -1682,16 +2270,26 @@ class ImageView(QGraphicsView):
 
     def set_ocr_label(self, text: str):
         sc = self.scene()
+        if not sc:
+            # Keine Scene vorhanden, kann Overlay nicht anzeigen
+            return
+            
         try:
             if self._tag_item is not None:
                 sc.removeItem(self._tag_item)
+                self._tag_item = None
             if self._tag_bg_item is not None:
                 sc.removeItem(self._tag_bg_item)
+                self._tag_bg_item = None
         except Exception:
             pass
-        if not text:
+            
+        if not text or not text.strip():
             self._tag_item = None
             self._tag_bg_item = None
+            # View aktualisieren, damit entferntes Overlay verschwindet
+            if hasattr(self, 'viewport'):
+                self.viewport().update()
             return
         
         from PySide6.QtGui import QFont, QBrush
@@ -1735,13 +2333,44 @@ class ImageView(QGraphicsView):
             
             self._tag_bg_item.setPos(x_pos, y_pos)
             self._tag_item.setPos(x_pos + text_x_offset, y_pos + padding)
+        else:
+            # Fallback: Position oben links, wenn kein Bild geladen
+            self._tag_bg_item.setPos(10, 10)
+            self._tag_item.setPos(14, 14)
         
         # Z-Order: Hintergrund unten, Text oben
         self._tag_bg_item.setZValue(9)
         self._tag_item.setZValue(10)
         
+        # Items zur Scene hinzufügen
         sc.addItem(self._tag_bg_item)
         sc.addItem(self._tag_item)
+        
+        # View sofort aktualisieren, damit Overlay sichtbar wird
+        if hasattr(self, 'viewport'):
+            self.viewport().update()
+
+    def begin_export_without_overlay(self):
+        hidden = []
+        for item in (self._tag_item, self._tag_bg_item):
+            try:
+                if item is not None and item.isVisible():
+                    item.setVisible(False)
+                    hidden.append(item)
+            except Exception:
+                pass
+        return hidden
+
+    def end_export_without_overlay(self, hidden_items):
+        if not hidden_items:
+            return
+        for item in hidden_items:
+            try:
+                item.setVisible(True)
+            except Exception:
+                pass
+        if hasattr(self, 'viewport'):
+            self.viewport().update()
 
     def set_context_edit_handler(self, cb):
         self._context_edit_callback = cb
@@ -1758,21 +2387,49 @@ class ImageView(QGraphicsView):
         rect = self.scene().itemsBoundingRect()
         if rect.isValid():
             self.fitInView(rect, Qt.KeepAspectRatio)
+            # Berechne Zoom-Faktor nach fit_to_view
+            view_rect = self.viewport().rect()
+            scene_rect = self.sceneRect()
+            if scene_rect.width() > 0 and scene_rect.height() > 0:
+                scale_x = view_rect.width() / scene_rect.width()
+                scale_y = view_rect.height() / scene_rect.height()
+                fit_scale = min(scale_x, scale_y) * 0.95  # 95% für Margin
+                self._zoom_factor = fit_scale
+                self._update_zoom_label()
+            self._manual_zoom_active = False  # Reset: Automatische Anpassung
+            self._zoom_mode = "fit_to_view"  # Zoom-Modus setzen
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        self.fit_to_view()
+        # Nur fit_to_view aufrufen, wenn nicht manuell gezoomt wurde
+        if not self._manual_zoom_active:
+            self.fit_to_view()
+        else:
+            # Wenn manuell gezoomt: Zoom-Faktor beibehalten
+            # Berechne neue Basis-Skalierung
+            if self._pix and self.scene() and self.scene().items():
+                self.resetTransform()
+                rect = self.scene().itemsBoundingRect()
+                if rect.isValid():
+                    self.fitInView(rect, Qt.KeepAspectRatio)
+                    # Skaliere auf gespeicherten Zoom-Faktor
+                    view_rect = self.viewport().rect()
+                    scene_rect = self.sceneRect()
+                    if scene_rect.width() > 0 and scene_rect.height() > 0:
+                        scale_x = view_rect.width() / scene_rect.width()
+                        scale_y = view_rect.height() / scene_rect.height()
+                        fit_scale = min(scale_x, scale_y) * 0.95
+                        # Skaliere relativ zu fit_scale auf den gewünschten Zoom
+                        target_scale = self._zoom_factor / fit_scale if fit_scale > 0 else self._zoom_factor
+                        self.scale(target_scale, target_scale)
+                        # Zentriere das Bild
+                        if self._pix:
+                            self.centerOn(self._pix.width() / 2, self._pix.height() / 2)
         
-        # Positioniere Navigation-Overlay am unteren Rand zentriert
-        if hasattr(self.parent(), 'nav_container'):
-            nav = self.parent().nav_container
-            if nav:
-                # Zentriere horizontal, positioniere am unteren Rand
-                nav_width = nav.sizeHint().width()
-                x = (self.width() - nav_width) // 2
-                y = self.height() - nav.height() - 20  # 20px vom unteren Rand
-                nav.move(x, y)
-                nav.show()
+        # Positioniere Navigation-Overlay am unteren Rand (nur wenn "overlay" aktiv)
+        nav_position = self.settings_manager.get("navigation_position", "below") or "below"
+        if nav_position == "overlay":
+            self._position_overlay_navigation()
 
     def wheelEvent(self, ev):
         # Strg+Mausrad = zoomen, sonst normal scrollen
@@ -1780,6 +2437,8 @@ class ImageView(QGraphicsView):
             factor = 1.15 if ev.angleDelta().y() > 0 else 1/1.15
             self.scale(factor, factor)
             self._zoom_factor *= factor
+            self._manual_zoom_active = True  # Manueller Zoom aktiv
+            self._zoom_mode = "manual"  # Zoom-Modus setzen
             self._update_zoom_label()
         else:
             super().wheelEvent(ev)
@@ -1794,6 +2453,8 @@ class ImageView(QGraphicsView):
         factor = 1.25
         self.scale(factor, factor)
         self._zoom_factor *= factor
+        self._manual_zoom_active = True  # Manueller Zoom aktiv
+        self._zoom_mode = "manual"  # Zoom-Modus setzen
         self._update_zoom_label()
     
     def zoom_out(self):
@@ -1801,13 +2462,41 @@ class ImageView(QGraphicsView):
         factor = 0.8
         self.scale(factor, factor)
         self._zoom_factor *= factor
+        self._manual_zoom_active = True  # Manueller Zoom aktiv
+        self._zoom_mode = "manual"  # Zoom-Modus setzen
         self._update_zoom_label()
     
     def reset_zoom(self):
         """Setzt Zoom auf 1:1 zurück"""
+        if not self._pix:
+            return
         self.resetTransform()
-        self._zoom_factor = 1.0
+        # Berechne Zoom-Faktor für 1:1 (Originalgröße)
+        # 1:1 bedeutet: 1 Pixel Bild = 1 Pixel Bildschirm
+        # Aber wir müssen sicherstellen, dass das Bild sichtbar ist
+        # Daher verwenden wir fit_to_view() als Basis und dann skalieren wir auf 1:1
+        self.fit_to_view()
+        # Jetzt haben wir fit_to_view als Basis, berechne den Faktor für 1:1
+        view_rect = self.viewport().rect()
+        scene_rect = self.sceneRect()
+        if scene_rect.width() > 0 and scene_rect.height() > 0:
+            scale_x = view_rect.width() / scene_rect.width()
+            scale_y = view_rect.height() / scene_rect.height()
+            fit_scale = min(scale_x, scale_y) * 0.95  # 95% für Margin
+            # Für 1:1: Wir müssen relativ zu fit_scale skalieren
+            # 1:1 bedeutet: zoom_to_original / fit_scale
+            target_relative_zoom = 1.0 / fit_scale if fit_scale > 0 else 1.0
+            self.scale(target_relative_zoom, target_relative_zoom)
+            self._zoom_factor = target_relative_zoom
+        else:
+            self._zoom_factor = 1.0
         self._update_zoom_label()
+        # Zentriere das Bild
+        if self._pix:
+            self.centerOn(self._pix.width() / 2, self._pix.height() / 2)
+        # 1:1 Zoom-Modus setzen
+        self._manual_zoom_active = False
+        self._zoom_mode = "1:1"
     
     # Zeichenwerkzeug-Integration
     def setup_drawing(self, manager: DrawingManager):

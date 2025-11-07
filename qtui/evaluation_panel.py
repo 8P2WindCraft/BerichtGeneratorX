@@ -25,6 +25,7 @@ from utils_exif import (
 )
 from .settings_manager import get_settings_manager
 from .widgets import ChipButton, ToggleSwitch
+from typing import Optional
 
 
 def _normalize_list(values: Iterable[str], fallback: list[str], limit: int | None = None) -> list[str]:
@@ -49,7 +50,7 @@ class EvaluationPanel(QWidget):
     evaluationChanged = Signal(str, dict)
     useChanged = Signal(str, bool)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, cache_layer=None):
         super().__init__(parent)
         self.settings_manager = get_settings_manager()
         self.settings_manager.settingsChanged.connect(self._on_settings_changed)
@@ -63,6 +64,9 @@ class EvaluationPanel(QWidget):
         self._quality_section_body: QWidget | None = None
         self._image_section_body: QWidget | None = None
         self._visual_ok_texts: set[str] = set()
+        
+        # Cache-Layer für schnelles Speichern
+        self._cache_layer = cache_layer
 
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
@@ -174,9 +178,22 @@ class EvaluationPanel(QWidget):
             return
         self._clear_layout(layout)
         self._image_type_buttons = []
-        for text in options:
-            btn = ChipButton(text)
+        
+        # Tastaturkürzel für Bildarten: Q/W/E/R/T
+        shortcuts = ['Q', 'W', 'E', 'R', 'T']
+        show_shortcuts = self.settings_manager.get("show_keyboard_shortcuts", True)
+        
+        for i, text in enumerate(options):
+            # Füge Tastaturkürzel hinzu wenn aktiviert
+            if show_shortcuts and i < len(shortcuts):
+                display_text = f"{text} ({shortcuts[i]})"
+            else:
+                display_text = text
+            
+            btn = ChipButton(display_text)
             btn.setCheckable(True)
+            btn.setProperty("original_text", text)  # Speichere Original-Text
+            btn.setProperty("shortcut_key", shortcuts[i] if i < len(shortcuts) else None)
             # Mehrfachauswahl möglich - speichern bei jeder Änderung
             btn.toggled.connect(lambda checked, b=btn: self._on_image_type_toggled(b, checked))
             layout.addWidget(btn)
@@ -220,7 +237,8 @@ class EvaluationPanel(QWidget):
             
             # Wenn ein Schaden aktiviert wird: "Visuell keine Defekte" deaktivieren
             for btn in self._damage_buttons:
-                if btn.text() in self._visual_ok_texts and btn.isChecked():
+                original = btn.property("original_text") or btn.text()
+                if original in self._visual_ok_texts and btn.isChecked():
                     btn.blockSignals(True)
                     btn.setChecked(False)
                     btn.blockSignals(False)
@@ -238,7 +256,8 @@ class EvaluationPanel(QWidget):
             
             for btn in self._damage_buttons:
                 # Buttons ausblenden die nicht zur Bildart passen
-                btn.setVisible(btn.text() in allowed_damages or btn.text() in self._visual_ok_texts)
+                original = btn.property("original_text") or btn.text()
+                btn.setVisible(original in allowed_damages or original in self._visual_ok_texts)
         else:
             # Keine Zuordnung: Zeige alle
             for btn in self._damage_buttons:
@@ -257,8 +276,19 @@ class EvaluationPanel(QWidget):
             if ("visuell" in t.lower() and "keine" in t.lower()) or 
                ("visually" in t.lower() and "no" in t.lower() and "defect" in t.lower())
         }
-        for text in options:
-            btn = ChipButton(text)
+        
+        # Tastaturkürzel für Schadenskategorien: 1-9
+        show_shortcuts = self.settings_manager.get("show_keyboard_shortcuts", True)
+        
+        for i, text in enumerate(options):
+            # Füge Tastaturkürzel hinzu wenn aktiviert
+            if show_shortcuts and i < 9:
+                display_text = f"{text} ({i+1})"
+            else:
+                display_text = text
+            
+            btn = ChipButton(display_text)
+            btn.setProperty("original_text", text)  # Speichere Original-Text
             if text in self._visual_ok_texts:
                 # Nur grün wenn aktiv (checked)
                 btn.setStyleSheet("""
@@ -324,7 +354,11 @@ class EvaluationPanel(QWidget):
                 return
 
             self.setEnabled(True)
-            eval_obj = get_evaluation(path) or {}
+            # Verwende Cache-Layer falls verfügbar, sonst direkt aus EXIF lesen
+            if self._cache_layer:
+                eval_obj = self._cache_layer.get_evaluation(path) or {}
+            else:
+                eval_obj = get_evaluation(path) or {}
             
             # Auto-Bildart: Wenn keine Bildart vorhanden, aber Kürzel-Manager eine vorgibt
             if not eval_obj.get('image_type') and not eval_obj.get('image_types'):
@@ -339,14 +373,21 @@ class EvaluationPanel(QWidget):
                         if predefined_image_type:
                             # Setze vordefinierte Bildart
                             eval_obj['image_type'] = predefined_image_type
-                            # Sofort speichern
-                            set_evaluation(path, eval_obj)
+                            # Sofort speichern (mit Cache-Layer falls verfügbar)
+                            if self._cache_layer:
+                                self._cache_layer.set_evaluation(path, image_type=predefined_image_type)
+                            else:
+                                set_evaluation(path, image_type=predefined_image_type)
                 except Exception:
                     pass
             
             # Sprach-/Synonym-Normalisierung: Werte aus den EXIFs
             # (z.B. Deutsch) auf die aktuell sichtbaren Optionen abbilden.
-            use_flag = get_used_flag(path)
+            # Verwende Cache-Layer falls verfügbar
+            if self._cache_layer:
+                use_flag = self._cache_layer.get_used_flag(path)
+            else:
+                use_flag = get_used_flag(path)
             self.use_toggle.setChecked(bool(use_flag))
             self.gene_toggle.setChecked(bool(eval_obj.get('gene')))
 
@@ -392,7 +433,9 @@ class EvaluationPanel(QWidget):
                 mapped = _map_value_to_current(c, 'damage')
                 mapped_categories.add(mapped if mapped else c)
             for btn in self._damage_buttons:
-                btn.setChecked(btn.text() in mapped_categories)
+                # WICHTIG: Verwende original_text, nicht den angezeigten Text mit Shortcuts!
+                original = btn.property("original_text") or btn.text()
+                btn.setChecked(original in mapped_categories)
 
             # Bildart mappen (Mehrfachauswahl)
             img_type = eval_obj.get('image_type')
@@ -409,7 +452,9 @@ class EvaluationPanel(QWidget):
                 raw_list = [single] if isinstance(single, str) and single else []
             selected = {str(x).strip() for x in raw_list}
             for btn in self._image_type_buttons:
-                btn.setChecked(btn.text() in selected)
+                # WICHTIG: Verwende original_text, nicht den angezeigten Text mit Shortcuts!
+                original = btn.property("original_text") or btn.text()
+                btn.setChecked(original in selected)
 
             # Quality mapping
             quality = eval_obj.get('quality')
@@ -438,7 +483,9 @@ class EvaluationPanel(QWidget):
                 q_map = None
             quality_found = False
             for btn in self._quality_buttons:
-                btn.setChecked(btn.text() == (q_map or quality))
+                # WICHTIG: Verwende original_text, nicht den angezeigten Text mit Shortcuts!
+                original = btn.property("original_text") or btn.text()
+                btn.setChecked(original == (q_map or quality))
                 if btn.isChecked():
                     quality_found = True
             if not quality_found:
@@ -475,11 +522,25 @@ class EvaluationPanel(QWidget):
         self._auto_timer.start(2000)  # 2 Sekunden Debouncing für bessere Performance
 
     def commit_pending(self):
-        """Speichert sofort, falls noch ein Auto-Save ansteht."""
-        if not self._auto_timer.isActive():
-            return
-        self._auto_timer.stop()
-        self._save_state()
+        """Speichert sofort, falls noch ein Auto-Save ansteht oder Cache-Layer pending changes hat."""
+        # Prüfe Timer
+        timer_active = self._auto_timer.isActive()
+        if timer_active:
+            self._auto_timer.stop()
+        
+        # Prüfe Cache-Layer für pending changes
+        if self._cache_layer and self._path:
+            has_pending = self._cache_layer.has_pending_changes(self._path)
+            if has_pending:
+                # Flushe pending changes sofort
+                try:
+                    self._cache_layer.flush_to_exif(self._path)
+                except Exception:
+                    pass
+        
+        # Speichere State (falls Timer aktiv war oder wenn kein Cache-Layer)
+        if timer_active or not self._cache_layer:
+            self._save_state()
 
     def _save_state(self, notes: str = None):
         if self._loading or not self._path:
@@ -487,25 +548,57 @@ class EvaluationPanel(QWidget):
         path = self._path
         state = self.get_state()
         try:
-            set_evaluation(
-                path,
-                categories=state['categories'],
-                quality=state['quality'],
-                image_type=state.get('image_type'),
-                image_types=state.get('image_types'),
-                notes=notes,  # Notes können optional von außen übergeben werden
-                gene=state['gene'],
-            )
-            set_used_flag(path, state['use'])
+            # Verwende Cache-Layer falls verfügbar, sonst direkt in EXIF schreiben
+            if self._cache_layer:
+                # Speichere sofort im Cache (asynchrones Schreiben in EXIF erfolgt durch Worker)
+                self._cache_layer.set_evaluation(
+                    path,
+                    categories=state['categories'],
+                    quality=state['quality'],
+                    image_type=state.get('image_type'),
+                    image_types=state.get('image_types'),
+                    notes=notes,  # Notes können optional von außen übergeben werden
+                    gene=state['gene'],
+                )
+                self._cache_layer.set_used_flag(path, state['use'])
+            else:
+                # Fallback: Direkt in EXIF schreiben (alte Methode)
+                set_evaluation(
+                    path,
+                    categories=state['categories'],
+                    quality=state['quality'],
+                    image_type=state.get('image_type'),
+                    image_types=state.get('image_types'),
+                    notes=notes,
+                    gene=state['gene'],
+                )
+                set_used_flag(path, state['use'])
+            
+            # Signal emittieren für UI-Updates (unabhängig von Cache-Layer)
             self.evaluationChanged.emit(path, state)
         except Exception:
             pass
+    
+    def set_cache_layer(self, cache_layer):
+        """Setzt den Cache-Layer (wird von MainWindow aufgerufen)"""
+        self._cache_layer = cache_layer
 
     def get_state(self) -> dict:
-        categories = [btn.text() for btn in self._damage_buttons if btn.isChecked()]
-        image_types = [btn.text() for btn in self._image_type_buttons if btn.isChecked()]
+        # WICHTIG: Verwende original_text, nicht den angezeigten Text mit Shortcuts!
+        categories = [
+            btn.property("original_text") or btn.text() 
+            for btn in self._damage_buttons if btn.isChecked()
+        ]
+        image_types = [
+            btn.property("original_text") or btn.text()
+            for btn in self._image_type_buttons if btn.isChecked()
+        ]
         image_type = image_types[0] if image_types else None
-        quality = next((btn.text() for btn in self._quality_buttons if btn.isChecked()), None)
+        quality = next(
+            (btn.property("original_text") or btn.text() 
+             for btn in self._quality_buttons if btn.isChecked()), 
+            None
+        )
         state = {
             'categories': categories,
             'image_type': image_type,
@@ -524,7 +617,8 @@ class EvaluationPanel(QWidget):
         try:
             any_set = False
             for btn in self._damage_buttons:
-                mark = btn.text() in self._visual_ok_texts
+                original = btn.property("original_text") or btn.text()
+                mark = original in self._visual_ok_texts
                 btn.setChecked(mark)
                 if mark:
                     any_set = True
@@ -576,13 +670,16 @@ class EvaluationPanel(QWidget):
     def _restore_state(self, state: dict):
         cats = set(state.get('categories') or [])
         for btn in self._damage_buttons:
-            btn.setChecked(btn.text() in cats)
+            original = btn.property("original_text") or btn.text()
+            btn.setChecked(original in cats)
         imgs = set(state.get('image_types') or ([] if not state.get('image_type') else [state.get('image_type')]))
         for btn in self._image_type_buttons:
-            btn.setChecked(btn.text() in imgs)
+            original = btn.property("original_text") or btn.text()
+            btn.setChecked(original in imgs)
         qual = state.get('quality')
         for btn in self._quality_buttons:
-            btn.setChecked(btn.text() == qual)
+            original = btn.property("original_text") or btn.text()
+            btn.setChecked(original == qual)
         self._set_use(bool(state.get('use')))
         self.gene_toggle.setChecked(bool(state.get('gene')))
 
@@ -591,11 +688,34 @@ class EvaluationPanel(QWidget):
     
     def get_damage_categories(self) -> list[str]:
         """Gibt Liste der Schadenskategorien zurück für Index-Zugriff"""
-        return [btn.text() for btn in self._damage_buttons]
+        return [btn.property("original_text") or btn.text() for btn in self._damage_buttons]
     
     def get_image_types(self) -> list[str]:
         """Gibt Liste der Bildarten zurück für Index-Zugriff"""
-        return [btn.text() for btn in self._image_type_buttons]
+        return [btn.property("original_text") or btn.text() for btn in self._image_type_buttons]
+    
+    def refresh_button_labels(self):
+        """Aktualisiert Button-Labels basierend auf show_keyboard_shortcuts Einstellung"""
+        show_shortcuts = self.settings_manager.get("show_keyboard_shortcuts", True)
+        
+        # Bildarten aktualisieren
+        shortcuts_img = ['Q', 'W', 'E', 'R', 'T']
+        for i, btn in enumerate(self._image_type_buttons):
+            original = btn.property("original_text") or btn.text()
+            if show_shortcuts and i < len(shortcuts_img):
+                display_text = f"{original} ({shortcuts_img[i]})"
+            else:
+                display_text = original
+            btn.setText(display_text)
+        
+        # Schadenskategorien aktualisieren
+        for i, btn in enumerate(self._damage_buttons):
+            original = btn.property("original_text") or btn.text()
+            if show_shortcuts and i < 9:
+                display_text = f"{original} ({i+1})"
+            else:
+                display_text = original
+            btn.setText(display_text)
     
     def toggle_damage_by_index(self, index: int):
         """Toggle Schadenskategorie per Index (0-basiert)"""
@@ -624,6 +744,7 @@ class EvaluationPanel(QWidget):
             return
         # Finde "Visuell keine Defekte" Button
         for btn in self._damage_buttons:
-            if btn.text() in self._visual_ok_texts:
+            original = btn.property("original_text") or btn.text()
+            if original in self._visual_ok_texts:
                 btn.setChecked(not btn.isChecked())
                 break

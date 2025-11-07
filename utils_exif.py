@@ -6,6 +6,9 @@ KRITISCH: Kompatibilität mit bestehenden Bildern wahren!
 """
 
 import json
+import os
+from typing import Any, Optional, Sequence
+
 from PIL import Image, ExifTags
 from utils_logging import write_detailed_log, get_logger
 
@@ -15,6 +18,13 @@ _log = get_logger('app', {"module": "utils_exif"})
 def get_exif_usercomment(image_path):
     """Liest das EXIF UserComment-Feld aus einem Bild"""
     try:
+        # Prüfe ob Datei existiert und nicht leer ist
+        if not os.path.exists(image_path):
+            return None
+        if os.path.getsize(image_path) == 0:
+            # Stille Behandlung von 0-Byte-Dateien (kein Log, kein Print)
+            return None
+        
         with Image.open(image_path) as img:
             exif = img.getexif()
             if exif is None:
@@ -51,8 +61,10 @@ def get_exif_usercomment(image_path):
             write_detailed_log("info", "Kein UserComment-Tag in EXIF-Daten gefunden", f"Bild: {image_path}")
             return None
     except Exception as e:
-        write_detailed_log("error", "Fehler beim Lesen der EXIF-Daten", f"Bild: {image_path}", e)
-        print(f"Fehler beim Lesen der EXIF-Daten: {e}")
+        # Nur bei kritischen Fehlern loggen (nicht bei 0-Byte-Dateien oder ungültigen Bildern)
+        error_msg = str(e)
+        if "cannot identify image file" not in error_msg.lower() and "cannot open" not in error_msg.lower():
+            write_detailed_log("error", "Fehler beim Lesen der EXIF-Daten", f"Bild: {image_path}", e)
         return None
 
 
@@ -344,31 +356,56 @@ def get_ocr_info(image_path: str) -> dict:
     return out
 
 
-def set_ocr_info(image_path: str, *, tag: str = None, confidence: float = None, box: tuple | list = None) -> bool:
-    """Schreibt OCR-Infos unter 'ocr' und hält Kompatibilitätsfelder aktuell (TAGOCR/ocr_result)."""
+_TAG_SENTINEL = object()
+
+
+def set_ocr_info(
+    image_path: str,
+    *,
+    tag: Any = _TAG_SENTINEL,
+    confidence: Optional[float] = None,
+    box: Optional[Sequence[int]] = None,
+) -> bool:
+    """Schreibt OCR-Infos unter 'ocr' und hält Kompatibilitätsfelder aktuell (TAGOCR/ocr_result).
+
+    Wird `tag=None` übergeben, wird ein vorhandener OCR-Tag entfernt. Wird der Parameter gar nicht
+    gesetzt, bleibt der bestehende Tag unangetastet."""
+
     try:
         md = read_metadata(image_path)
         o = md.get('ocr') if isinstance(md.get('ocr'), dict) else {}
         if not isinstance(o, dict):
             o = {}
-        if tag is not None:
-            o['tag'] = str(tag)
-            # Kompatibilität: Top-Level Spiegel
-            if str(tag).strip():
-                md['TAGOCR'] = str(tag).strip()
-                md['ocr_result'] = str(tag).strip()
+
+        tag_provided = tag is not _TAG_SENTINEL
+        if tag_provided:
+            cleaned_tag = ""
+            if tag is not None:
+                cleaned_tag = str(tag).strip()
+
+            if cleaned_tag:
+                o['tag'] = cleaned_tag
+                md['TAGOCR'] = cleaned_tag
+                md['ocr_result'] = cleaned_tag
             else:
-                # leeren Tag entfernen
+                o.pop('tag', None)
                 md.pop('TAGOCR', None)
                 md.pop('ocr_result', None)
+
         if confidence is not None:
             try:
                 o['confidence'] = float(confidence)
             except Exception:
                 pass
+
         if box is not None and isinstance(box, (list, tuple)) and len(box) == 4:
             o['box'] = [int(v) for v in box]
-        md['ocr'] = o
+
+        if o:
+            md['ocr'] = o
+        else:
+            md.pop('ocr', None)
+
         return write_metadata(image_path, md)
     except Exception:
         return False

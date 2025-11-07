@@ -6,12 +6,14 @@ from PySide6.QtWidgets import (
     QGroupBox, QCheckBox, QSpinBox, QTreeView
 )
 from PySide6.QtCore import Signal, Qt, QTimer, QEvent
-from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QStandardItemModel, QStandardItem, QPen, QBrush, QPainterPath
+from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QStandardItemModel, QStandardItem, QPen, QBrush, QPainterPath, QImage
 from utils_logging import get_logger
 from utils_exif import get_ocr_info, get_evaluation, get_used_flag
 from .settings_manager import get_settings_manager
 from .evaluation_panel import EvaluationPanel
 import os
+import hashlib
+from PIL import Image
 
 
 class ClickableLabel(QLabel):
@@ -80,6 +82,10 @@ class GalleryView(QWidget):
         self._evaluation_panel: EvaluationPanel | None = None
         # Settings Manager
         self.settings_manager = get_settings_manager()
+        # Cache-Layer für Bewertungen (wird von MainWindow gesetzt)
+        self._cache_layer = None
+        # Timer für verzögerte Overlay-Updates
+        self._refresh_timers: dict = {}  # {path: QTimer}
 
         # Hauptlayout
         main_layout = QVBoxLayout(self)
@@ -326,7 +332,7 @@ class GalleryView(QWidget):
             titles_de = sm.get('section_titles_de', []) or []
             titles_en = sm.get('section_titles_en', []) or []
             mapping = sm.get('section_kurzel_map', {}) or {}
-            lang = (sm.get('language', 'Deutsch') or 'Deutsch').lower()
+            lang = (sm.get('language', 'English') or 'English').lower()
             use_de = lang.startswith('de')
 
             self.code_model.clear()
@@ -554,6 +560,17 @@ class GalleryView(QWidget):
         self.set_folder(folder, emit=True)
 
     def set_folder(self, folder: str, emit: bool = False):
+        # Bereinige Timer vom vorherigen Ordner (verhindert Memory Leak)
+        if hasattr(self, '_refresh_timers'):
+            for timer in list(self._refresh_timers.values()):
+                try:
+                    if timer.isActive():
+                        timer.stop()
+                    timer.deleteLater()
+                except Exception:
+                    pass
+            self._refresh_timers.clear()
+        
         exts = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff'}
         files = [os.path.join(folder, f) for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in exts]
         files.sort()
@@ -839,11 +856,15 @@ class GalleryView(QWidget):
     
     def _on_image_clicked(self, path: str):
         """Wird bei Einfach-Klick aufgerufen - Auswahl und Bewertung laden"""
-        # Alte Auswahl deselektieren
-        if self._current_selected_path and self._current_selected_path in self._path_to_label:
-            old_label = self._path_to_label[self._current_selected_path]
-            if hasattr(old_label, 'set_selected'):
-                old_label.set_selected(False)
+        # Alte Auswahl deselektieren und Overlays aktualisieren
+        if self._current_selected_path and self._current_selected_path != path:
+            old_path = self._current_selected_path
+            if old_path in self._path_to_label:
+                old_label = self._path_to_label[old_path]
+                if hasattr(old_label, 'set_selected'):
+                    old_label.set_selected(False)
+                # Overlays des alten Bildes aktualisieren (falls Bewertung geändert wurde)
+                self.refresh_item(old_path, emit_signal=False)
         
         # Neue Auswahl setzen
         self._current_selected_path = path
@@ -857,6 +878,12 @@ class GalleryView(QWidget):
         
         # Bewertung und Toggle-Buttons laden
         self._load_image_data(path)
+        
+        # WICHTIG: Synchronisiere mit Single View (ohne Tab-Wechsel)
+        self.imageSelected.emit(path)
+        
+        # WICHTIG: Fokus auf Gallery View setzen für Keyboard-Shortcuts
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
     
     def _load_image_data(self, path: str):
         """Lädt Panel und Toggle-Daten im Hintergrund"""
@@ -878,11 +905,24 @@ class GalleryView(QWidget):
             if not path:
                 return
 
-            # Vorherige Auswahl zurücksetzen
-            if self._current_selected_path and self._current_selected_path in self._path_to_label:
-                old_label = self._path_to_label[self._current_selected_path]
-                if hasattr(old_label, 'set_selected'):
-                    old_label.set_selected(False)
+            # Prüfe ob bereits das gleiche Bild ausgewählt ist, um Signalschleife zu vermeiden
+            if self._current_selected_path == path:
+                # Stelle sicher, dass Auswahl sichtbar ist
+                if path in self._path_to_label:
+                    label = self._path_to_label[path]
+                    if hasattr(label, 'set_selected'):
+                        label.set_selected(True)
+                return
+
+            # Vorherige Auswahl zurücksetzen und Overlays aktualisieren
+            if self._current_selected_path and self._current_selected_path != path:
+                old_path = self._current_selected_path
+                if old_path in self._path_to_label:
+                    old_label = self._path_to_label[old_path]
+                    if hasattr(old_label, 'set_selected'):
+                        old_label.set_selected(False)
+                    # Overlays des alten Bildes aktualisieren (falls Bewertung geändert wurde)
+                    self.refresh_item(old_path, emit_signal=False)
 
             self._current_selected_path = path
 
@@ -1024,6 +1064,16 @@ class GalleryView(QWidget):
     def refresh_layout_from_settings(self):
         """Wendet geanderte Anzeige-/Thumbnail-Settings an (z. B. thumb_size)."""
         self._cache.clear()
+        # Bereinige auch Timer (verhindert Memory Leak)
+        if hasattr(self, '_refresh_timers'):
+            for timer in list(self._refresh_timers.values()):
+                try:
+                    if timer.isActive():
+                        timer.stop()
+                    timer.deleteLater()
+                except Exception:
+                    pass
+            self._refresh_timers.clear()
         self._recalculate_layout()
         self._update_pagination()
         self._render_grid()
@@ -1060,10 +1110,14 @@ class GalleryView(QWidget):
                     panel.set_path(self._current_selected_path)
                 except Exception:
                     pass
+    
+    def set_cache_layer(self, cache_layer):
+        """Setzt den Cache-Layer (wird von MainWindow aufgerufen)"""
+        self._cache_layer = cache_layer
 
     def _on_panel_evaluation(self, path: str, state: dict):
         if path in getattr(self, '_path_to_label', {}):
-            self.refresh_item(path, emit_signal=False)
+            self.refresh_item(path, emit_signal=False, delay_ms=500)
 
     def _load_chunk(self):
         if self._pending_idx >= len(self._labels):
@@ -1173,28 +1227,53 @@ class GalleryView(QWidget):
         painter.setPen(QColor(0, 0, 0))
         painter.drawRect(x_start - icon_size - 2, y_start, icon_size, icon_size)
 
-    def refresh_item(self, path: str, emit_signal: bool = False):
+    def refresh_item(self, path: str, emit_signal: bool = False, delay_ms: int = 500):
+        """Aktualisiert ein Thumbnail mit optionaler Verzögerung für bessere Performance"""
         try:
             lbl = self._path_to_label.get(path)
         except Exception:
             lbl = None
         if not lbl:
             return
-        try:
-            keys_to_del = [k for k in self._cache if k[0] == path]
-            for key in keys_to_del:
-                del self._cache[key]
-            w, h = self._thumb_size
-            p = QPixmap(path)
-            if not p.isNull():
-                self._cache[(path, self._thumb_size)] = p.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                self._pending_idx = 0
-                self._load_chunk()
-        except Exception:
-            pass
-
-        if emit_signal:
-            self.imageSelected.emit(path)
+        
+        # Stoppe vorhandenen Timer für diesen Pfad
+        if path in self._refresh_timers:
+            timer = self._refresh_timers[path]
+            if timer.isActive():
+                timer.stop()
+            del self._refresh_timers[path]
+        
+        # Erstelle neuen Timer für verzögertes Update
+        def _do_refresh():
+            try:
+                keys_to_del = [k for k in self._cache if k[0] == path]
+                for key in keys_to_del:
+                    del self._cache[key]
+                w, h = self._thumb_size
+                p = QPixmap(path)
+                if not p.isNull():
+                    self._cache[(path, self._thumb_size)] = p.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self._pending_idx = 0
+                    self._load_chunk()
+                
+                if emit_signal:
+                    self.imageSelected.emit(path)
+            except Exception:
+                pass
+            finally:
+                # Timer aus Dictionary entfernen
+                if path in self._refresh_timers:
+                    del self._refresh_timers[path]
+        
+        if delay_ms > 0:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(_do_refresh)
+            timer.start(delay_ms)
+            self._refresh_timers[path] = timer
+        else:
+            # Sofort aktualisieren
+            _do_refresh()
 
     # Neue, skalierende Badges (✓/X, Gene-?, Schadens-Chips, Typ-Icon)
     def _add_status_icons2(self, painter: QPainter, path: str, pixmap: QPixmap, used: bool):
@@ -1207,9 +1286,12 @@ class GalleryView(QWidget):
             base = min(w, h)
             m = self._overlay_metrics(base)
 
-            # Bewertung lesen
+            # Bewertung lesen (aus Cache-Layer falls verfügbar, sonst aus EXIF)
             try:
-                eval_data = get_evaluation(path) or {}
+                if self._cache_layer:
+                    eval_data = self._cache_layer.get_evaluation(path) or {}
+                else:
+                    eval_data = get_evaluation(path) or {}
             except Exception:
                 eval_data = {}
 
@@ -1240,11 +1322,15 @@ class GalleryView(QWidget):
     def _overlay_metrics(self, base: int) -> dict:
         def clamp(v, lo, hi):
             return max(lo, min(hi, int(round(v))))
-        margin = clamp(base * 0.05, 3, 12)
-        main_badge = clamp(base * 0.22, 14, 36)
-        gene_badge = clamp(base * 0.16, 12, 28)
-        type_icon = clamp(base * 0.15, 10, 25)  # 15-20% kleiner (war 0.18, 12-30)
-        chip_h = clamp(base * 0.16, 12, 28)
+        
+        # Skalierungsfaktor aus Einstellungen
+        scale = float(self.settings_manager.get("gallery_overlay_icon_scale", 1.0) or 1.0)
+        
+        margin = clamp(base * 0.05 * scale, 3, 12)
+        main_badge = clamp(base * 0.22 * scale, 14, 36)
+        gene_badge = clamp(base * 0.16 * scale, 12, 28)
+        type_icon = clamp(base * 0.15 * scale, 10, 25)  # 15-20% kleiner (war 0.18, 12-30)
+        chip_h = clamp(base * 0.16 * scale, 12, 28)
         chip_gap = clamp(chip_h * 0.2, 2, 8)
         font_px = clamp(chip_h * 0.58, 8, 18)
         return {

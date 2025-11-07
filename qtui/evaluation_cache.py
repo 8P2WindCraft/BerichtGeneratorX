@@ -232,6 +232,28 @@ class EvaluationCache:
         
         return images
     
+    def update_image_tag(self, path: str, tag: Optional[str]):
+        """Aktualisiert den gespeicherten OCR-Tag für ein einzelnes Bild."""
+        if not path:
+            return
+        filename = os.path.basename(path)
+        normalized = (tag or '').strip()
+
+        if filename in self._cache:
+            self._cache[filename]['tag'] = normalized
+            self._cache[filename]['filepath'] = path
+        else:
+            # Lege Minimal-Eintrag an, damit get_kurzel_progress sofort korrekte Daten liefert
+            self._cache[filename] = {
+                'tag': normalized,
+                'is_evaluated': False,
+                'filepath': path,
+                'damage': '',
+                'quality': '',
+                'use': None,
+                'gene': False,
+            }
+
     def get_images_for_category(self, category_name: str, kurzel_table: dict) -> List[str]:
         """Gibt Liste aller Bildpfade in einer Kategorie zurück"""
         self.refresh_if_needed()

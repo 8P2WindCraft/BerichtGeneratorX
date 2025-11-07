@@ -2,6 +2,7 @@
 from PySide6.QtCore import QObject, Signal, QSettings
 from PySide6.QtWidgets import QApplication
 from utils_logging import get_logger
+import copy
 import json
 import os
 import ast
@@ -23,7 +24,8 @@ class SettingsManager(QObject):
         # Standard-Einstellungen
         self.defaults = {
             "dark_mode": False,  # Dark Mode standardmäßig aus
-            "language": "Deutsch",
+            "language": "English",  # Standard: English
+            "show_keyboard_shortcuts": True,  # Tastaturkürzel in Buttons anzeigen
             # Zeige im Bild-Overlay nur den reinen OCR-Tag (Standard: False)
             # Wenn True, wird zusätzlich die Überschrift aus der Kürzel-Tabelle angezeigt
             "tag_overlay_heading": False,
@@ -40,10 +42,12 @@ class SettingsManager(QObject):
             "gallery_tag_size": 8,
             "single_tag_size": 9,
             "tag_opacity": 200,
+            "gallery_overlay_icon_scale": 1.0,  # Skalierungsfaktor für Overlay-Icons in Galerie (0.5 - 2.0)
             "theme": "System",
+            "navigation_position": "below",  # "overlay" oder "below"
             "thumb_size": 160,
             "thumb_quality": 85,
-            "image_quality": 95,
+            # image_quality ENTFERNT - Einzelansicht zeigt immer Original ohne Kompression
             "zoom_factor": 1.0,
             "crop_x": 100,
             "crop_y": 50,
@@ -86,6 +90,10 @@ class SettingsManager(QObject):
                 "HS2": {"kurzel_code": "HS2", "active": True, "frequency": 0, "order": 8},
                 "HS3": {"kurzel_code": "HS3", "active": True, "frequency": 0, "order": 9},
                 "HS4": {"kurzel_code": "HS4", "active": True, "frequency": 0, "order": 10}
+            },
+            "text_snippets": {
+                "tags": {},
+                "groups": {}
             },
             
             # Schadenskategorien (Deutsch und Englisch)
@@ -453,7 +461,7 @@ class SettingsManager(QObject):
     
     def get_language_specific_list(self, list_type):
         """Holt eine sprachspezifische Liste basierend auf der aktuellen Sprache"""
-        language = (self.get("language", "Deutsch") or "Deutsch").lower()
+        language = (self.get("language", "English") or "English").lower()
         suffix = "de" if language.startswith("deutsch") else "en"
         key = f"{list_type}_{suffix}"
 
@@ -477,7 +485,7 @@ class SettingsManager(QObject):
         """Returns 'de' or 'en' based on preference/settings."""
         pref = str(self.get("metadata_language", "UI") or "UI").strip().lower()
         if pref in {"ui", "auto"}:
-            lang = str(self.get("language", "Deutsch") or "Deutsch").strip().lower()
+            lang = str(self.get("language", "English") or "English").strip().lower()
             return 'de' if lang.startswith('de') else 'en'
         if pref in {"de", "deutsch", "german"}:
             return 'de'
@@ -498,6 +506,22 @@ class SettingsManager(QObject):
     def get_use_image_options(self):
         """Holt die 'Bild verwenden'-Optionen für die aktuelle Sprache"""
         return self.get_language_specific_list("use_image_options")
+
+    # ------------------------------------------------------------------
+    # Textbausteine
+    def get_text_snippet_config(self):
+        raw = self._cache.get('text_snippets', {})
+        normalized = self._normalize_text_snippets_config(raw)
+        if raw != normalized:
+            # Persistiere normalisierte Struktur
+            self.set('text_snippets', normalized)
+            normalized = self._cache.get('text_snippets', normalized)
+        return copy.deepcopy(normalized)
+
+    def set_text_snippet_config(self, config: dict):
+        normalized = self._normalize_text_snippets_config(config)
+        self.set('text_snippets', normalized)
+        return copy.deepcopy(normalized)
 
     # ------------------------------------------------------------------
     # Normalisierungshilfen
@@ -545,6 +569,100 @@ class SettingsManager(QObject):
                 except Exception:
                     continue
         return {}
+
+    def _normalize_text_snippets_config(self, value):
+        # Backward compatibility: alter default mapping {tag: [snippets]}
+        if not isinstance(value, dict):
+            value = {}
+
+        tags_section = value.get('tags') if isinstance(value, dict) else {}
+        groups_section = value.get('groups') if isinstance(value, dict) else {}
+
+        # Alte Struktur erkennen: dict ohne 'tags'/'groups'
+        if not tags_section and not groups_section:
+            if all(isinstance(v, (list, tuple, str)) for v in value.values()):
+                tags_section = value
+                groups_section = {}
+
+        normalized_tags = {}
+        if isinstance(tags_section, dict):
+            for raw_tag, raw_texts in tags_section.items():
+                tag = self._ensure_text(raw_tag)
+                if not tag:
+                    continue
+                tag_key = tag.upper()
+                snippets = self._normalize_snippet_list(raw_texts)
+                if snippets:
+                    normalized_tags[tag_key] = snippets
+
+        normalized_groups = {}
+        if isinstance(groups_section, dict):
+            iterator = groups_section.items()
+        elif isinstance(groups_section, list):
+            iterator = []
+            for entry in groups_section:
+                if isinstance(entry, dict):
+                    name = self._ensure_text(entry.get('name') or entry.get('id'))
+                    if name:
+                        iterator.append((name, entry))
+        else:
+            iterator = []
+
+        for raw_name, data in iterator:
+            name = self._ensure_text(raw_name)
+            if not name or not isinstance(data, dict):
+                continue
+            tags = self._normalize_tag_list(data.get('tags'))
+            snippets = self._normalize_snippet_list(data.get('snippets'))
+            normalized_groups[name] = {
+                'tags': tags,
+                'snippets': snippets
+            }
+
+        return {
+            'tags': normalized_tags,
+            'groups': normalized_groups
+        }
+
+    def _normalize_tag_list(self, tags):
+        if not tags:
+            return []
+        result = []
+        seen = set()
+        items = tags
+        if isinstance(tags, str):
+            items = [tags]
+        for tag in items:
+            cleaned = self._ensure_text(tag).upper()
+            if not cleaned:
+                continue
+            if cleaned in seen:
+                continue
+            seen.add(cleaned)
+            result.append(cleaned)
+        return result
+
+    def _normalize_snippet_list(self, value):
+        if value is None:
+            return []
+        snippets = []
+        if isinstance(value, (list, tuple)):
+            iterable = value
+        elif isinstance(value, str):
+            iterable = [value]
+        else:
+            iterable = [value]
+        seen = set()
+        for item in iterable:
+            text = self._ensure_text(item)
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            snippets.append(text)
+        return snippets
 
     @staticmethod
     def _ensure_text(value):

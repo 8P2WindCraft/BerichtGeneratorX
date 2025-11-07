@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QTextEdit,
     QPushButton, QGroupBox, QFormLayout, QScrollArea, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QSlider,
-    QRadioButton, QButtonGroup, QSizePolicy
+    QRadioButton, QButtonGroup, QSizePolicy, QListWidgetItem
 )
 from PySide6.QtCore import Qt, Signal, QSettings, QRegularExpression
 from PySide6.QtGui import QFont, QRegularExpressionValidator
@@ -163,16 +163,21 @@ class SettingsDialog(QDialog):
         image_group = QGroupBox("Bildanzeige-Einstellungen")
         image_layout = QFormLayout(image_group)
         
-        self.image_quality_spin = QSpinBox()
-        self.image_quality_spin.setRange(1, 100)
-        self.image_quality_spin.setSuffix("%")
-        image_layout.addRow("Bildqualität:", self.image_quality_spin)
+        # Bildqualität-Einstellung ENTFERNT - Einzelbild-Ansicht zeigt immer Original-Qualität!
         
         self.zoom_factor_spin = QDoubleSpinBox()
         self.zoom_factor_spin.setRange(0.1, 5.0)
         self.zoom_factor_spin.setSingleStep(0.1)
         self.zoom_factor_spin.setSuffix("x")
         image_layout.addRow("Standard-Zoom:", self.zoom_factor_spin)
+        
+        # Galerie Overlay-Icon-Größe
+        self.gallery_overlay_icon_scale_spin = QDoubleSpinBox()
+        self.gallery_overlay_icon_scale_spin.setRange(50, 200)
+        self.gallery_overlay_icon_scale_spin.setSingleStep(10)
+        self.gallery_overlay_icon_scale_spin.setSuffix("%")
+        self.gallery_overlay_icon_scale_spin.setValue(100)  # Standard: 100%
+        image_layout.addRow("Galerie Overlay-Icon-Größe:", self.gallery_overlay_icon_scale_spin)
         
         layout.addWidget(image_group)
 
@@ -204,6 +209,15 @@ class SettingsDialog(QDialog):
         tag_layout.addRow("Reihenfolge:", self.tag_heading_order_combo)
 
         layout.addWidget(tag_group)
+        
+        # Tastaturkürzel anzeigen
+        shortcuts_group = QGroupBox("Tastaturkürzel")
+        shortcuts_layout = QFormLayout(shortcuts_group)
+        
+        self.show_shortcuts_check = QCheckBox("Tastaturkürzel in Buttons anzeigen")
+        shortcuts_layout.addRow(self.show_shortcuts_check)
+        
+        layout.addWidget(shortcuts_group)
         
         # Galerie-Raster Einstellungen
         grid_group = QGroupBox("Galerie-Raster")
@@ -694,74 +708,161 @@ class SettingsDialog(QDialog):
         
         info_box = QLabel(
             "Textbausteine definieren vorgefertigte Texte, die beim Beschreiben von Schäden "
-            "eingefügt werden können.\nVerknüpfen Sie Textbausteine mit OCR-Tags für kontextspezifische Vorschläge."
+            "eingefügt werden können.\nVerknüpfen Sie Textbausteine direkt mit OCR-Tags oder bündeln Sie mehrere Kürzel in Gruppen."
         )
         info_box.setWordWrap(True)
         info_box.setStyleSheet("color: #4a4a4a; margin-bottom: 6px;")
         layout.addWidget(info_box)
         
-        # Splitter: Links Kürzel-Auswahl, Rechts Textbausteine für gewähltes Kürzel
+        self.snippet_tabs = QTabWidget()
+        layout.addWidget(self.snippet_tabs)
+
+        self._build_snippet_tag_tab()
+        self._build_snippet_group_tab()
+
+        self.tab_widget.addTab(tab, "Textbausteine")
+
+        # Initiale Daten laden
+        self._load_snippet_kurzel_list()
+        self._load_snippet_group_list()
+
+    def _build_snippet_tag_tab(self):
         from PySide6.QtWidgets import QSplitter, QListWidget
+
+        tag_tab = QWidget()
+        tag_layout = QVBoxLayout(tag_tab)
+
         splitter = QSplitter(Qt.Horizontal)
-        
+
         # Links: Kürzel-Liste
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.addWidget(QLabel("OCR-Tag auswählen:"))
-        
+
         self.snippets_kurzel_list = QListWidget()
         self.snippets_kurzel_list.currentItemChanged.connect(self._on_snippet_kurzel_selected)
         left_layout.addWidget(self.snippets_kurzel_list)
-        
+
         splitter.addWidget(left_widget)
-        
+
         # Rechts: Textbausteine für gewähltes Kürzel
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        
+
         self.snippet_tag_label = QLabel("Textbausteine für: (Kein Tag gewählt)")
         self.snippet_tag_label.setStyleSheet("font-weight: bold;")
         right_layout.addWidget(self.snippet_tag_label)
-        
-        # Textbausteine-Tabelle
+
         self.snippets_table = QTableWidget()
         self.snippets_table.setColumnCount(1)
         self.snippets_table.setHorizontalHeaderLabels(["Textbaustein"])
         self.snippets_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         right_layout.addWidget(self.snippets_table)
-        
-        # Buttons für Textbausteine
+
         snippets_controls = QHBoxLayout()
-        
+
         self.snippet_input = QLineEdit()
         self.snippet_input.setPlaceholderText("Neuer Textbaustein...")
         self.snippet_input.returnPressed.connect(self._add_text_snippet)
         snippets_controls.addWidget(self.snippet_input, 1)
-        
+
         btn_add_snippet = QPushButton("Hinzufügen")
         btn_add_snippet.clicked.connect(self._add_text_snippet)
         snippets_controls.addWidget(btn_add_snippet)
-        
+
         btn_remove_snippet = QPushButton("Entfernen")
         btn_remove_snippet.clicked.connect(self._remove_text_snippet)
         snippets_controls.addWidget(btn_remove_snippet)
-        
+
         btn_edit_snippet = QPushButton("Bearbeiten")
         btn_edit_snippet.clicked.connect(self._edit_text_snippet)
         snippets_controls.addWidget(btn_edit_snippet)
-        
+
         right_layout.addLayout(snippets_controls)
-        
+
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
-        
-        layout.addWidget(splitter)
-        
-        self.tab_widget.addTab(tab, "Textbausteine")
-        
-        # Kürzel-Liste beim Start laden
-        self._load_snippet_kurzel_list()
+
+        tag_layout.addWidget(splitter)
+
+        self.snippet_tabs.addTab(tag_tab, "Tags")
+
+    def _build_snippet_group_tab(self):
+        from PySide6.QtWidgets import QListWidget
+
+        group_tab = QWidget()
+        layout = QHBoxLayout(group_tab)
+
+        left_panel = QVBoxLayout()
+        left_panel.addWidget(QLabel("Gruppe auswählen:"))
+
+        self.snippet_group_list = QListWidget()
+        self.snippet_group_list.currentItemChanged.connect(self._on_snippet_group_selected)
+        left_panel.addWidget(self.snippet_group_list)
+
+        group_buttons = QHBoxLayout()
+        btn_add_group = QPushButton("Neue Gruppe")
+        btn_add_group.clicked.connect(self._add_snippet_group)
+        group_buttons.addWidget(btn_add_group)
+
+        btn_rename_group = QPushButton("Umbenennen")
+        btn_rename_group.clicked.connect(self._rename_snippet_group)
+        group_buttons.addWidget(btn_rename_group)
+
+        btn_remove_group = QPushButton("Löschen")
+        btn_remove_group.clicked.connect(self._remove_snippet_group)
+        group_buttons.addWidget(btn_remove_group)
+
+        left_panel.addLayout(group_buttons)
+
+        left_container = QWidget()
+        left_container.setLayout(left_panel)
+        layout.addWidget(left_container, 1)
+
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+
+        self.snippet_group_label = QLabel("Gruppe: (Keine Gruppe gewählt)")
+        self.snippet_group_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(self.snippet_group_label)
+
+        self.group_tags_list = QListWidget()
+        self.group_tags_list.itemChanged.connect(self._on_group_tag_item_changed)
+        right_layout.addWidget(self.group_tags_list)
+
+        # Snippet Tabelle für Gruppen
+        self.group_snippets_table = QTableWidget()
+        self.group_snippets_table.setColumnCount(1)
+        self.group_snippets_table.setHorizontalHeaderLabels(["Textbaustein"])
+        self.group_snippets_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        right_layout.addWidget(self.group_snippets_table)
+
+        group_snippet_controls = QHBoxLayout()
+
+        self.group_snippet_input = QLineEdit()
+        self.group_snippet_input.setPlaceholderText("Neuer Gruppen-Textbaustein...")
+        self.group_snippet_input.returnPressed.connect(self._add_group_text_snippet)
+        group_snippet_controls.addWidget(self.group_snippet_input, 1)
+
+        btn_add_group_snippet = QPushButton("Hinzufügen")
+        btn_add_group_snippet.clicked.connect(self._add_group_text_snippet)
+        group_snippet_controls.addWidget(btn_add_group_snippet)
+
+        btn_remove_group_snippet = QPushButton("Entfernen")
+        btn_remove_group_snippet.clicked.connect(self._remove_group_text_snippet)
+        group_snippet_controls.addWidget(btn_remove_group_snippet)
+
+        btn_edit_group_snippet = QPushButton("Bearbeiten")
+        btn_edit_group_snippet.clicked.connect(self._edit_group_text_snippet)
+        group_snippet_controls.addWidget(btn_edit_group_snippet)
+
+        right_layout.addLayout(group_snippet_controls)
+
+        layout.addWidget(right_container, 2)
+
+        self._group_tag_loading = False
+        self.snippet_tabs.addTab(group_tab, "Gruppen")
 
     def _load_default_categories(self):
         """Standard-Kategorien laden"""
@@ -833,12 +934,11 @@ class SettingsDialog(QDialog):
         if not current:
             return
         
-        tag = current.text()
+        tag = current.text().strip().upper()
         self.snippet_tag_label.setText(f"Textbausteine für: {tag}")
         
-        # Lade Textbausteine für dieses Tag
-        snippets = self.settings_manager.get('text_snippets', {})
-        tag_snippets = snippets.get(tag, [])
+        config = self.settings_manager.get_text_snippet_config()
+        tag_snippets = config.get('tags', {}).get(tag, [])
         
         # Tabelle füllen
         self.snippets_table.setRowCount(0)
@@ -854,7 +954,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Kein Tag gewählt", "Bitte wählen Sie zuerst ein OCR-Tag aus.")
             return
         
-        tag = current_item.text()
+        tag = current_item.text().strip().upper()
         snippet_text = self.snippet_input.text().strip()
         
         if not snippet_text:
@@ -880,7 +980,7 @@ class SettingsDialog(QDialog):
         if not current_item:
             return
         
-        tag = current_item.text()
+        tag = current_item.text().strip().upper()
         self.snippets_table.removeRow(current_row)
         
         # Speichere sofort
@@ -897,7 +997,7 @@ class SettingsDialog(QDialog):
         if not current_item:
             return
         
-        tag = current_item.text()
+        tag = current_item.text().strip().upper()
         old_text = self.snippets_table.item(current_row, 0).text()
         
         from PySide6.QtWidgets import QInputDialog
@@ -921,38 +1021,253 @@ class SettingsDialog(QDialog):
                 if text:
                     snippets.append(text)
         
-        # Hole alle Textbausteine
-        all_snippets = self.settings_manager.get('text_snippets', {})
+        config = self.settings_manager.get_text_snippet_config()
         if snippets:
-            all_snippets[tag] = snippets
-        elif tag in all_snippets:
-            del all_snippets[tag]
-        
-        self.settings_manager.set('text_snippets', all_snippets)
+            config.setdefault('tags', {})[tag] = snippets
+        else:
+            config.get('tags', {}).pop(tag, None)
+
+        self.settings_manager.set_text_snippet_config(config)
     
     def _load_snippet_kurzel_list(self):
         """Lädt die Kürzel-Liste für Textbausteine"""
         try:
-            # Hole alle aktiven Kürzel
-            kurzel_table = self.settings_manager.get('kurzel_table', {}) or {}
-            active_kurzel = [
-                code for code, data in kurzel_table.items()
-                if data.get('active', True)
-            ]
-            
-            # Sortiere alphabetisch
-            active_kurzel.sort()
-            
-            # Fülle Liste
+            codes = self._collect_all_kurzel_codes()
             self.snippets_kurzel_list.clear()
-            for kurzel in active_kurzel:
-                self.snippets_kurzel_list.addItem(kurzel)
-            
-            # Wähle ersten Eintrag falls vorhanden
+            for code in codes:
+                self.snippets_kurzel_list.addItem(code)
             if self.snippets_kurzel_list.count() > 0:
                 self.snippets_kurzel_list.setCurrentRow(0)
         except Exception as e:
             self._log.error("load_snippet_kurzel_list_failed", extra={"event": "load_snippet_kurzel_list_failed", "error": str(e)})
+
+    def _collect_all_kurzel_codes(self):
+        kurzel_table = self.settings_manager.get('kurzel_table', {}) or {}
+        codes = {
+            str(code).strip().upper()
+            for code, data in kurzel_table.items()
+            if str(code).strip() and data.get('active', True)
+        }
+        config = self.settings_manager.get_text_snippet_config()
+        codes.update(config.get('tags', {}).keys())
+        for group in config.get('groups', {}).values():
+            for tag in group.get('tags', []):
+                if tag:
+                    codes.add(tag.upper())
+        return sorted(codes)
+
+    # ------------------------------------------------------------------
+    # Gruppenspezifische Textbausteine
+    def _load_snippet_group_list(self):
+        try:
+            config = self.settings_manager.get_text_snippet_config()
+            groups = config.get('groups', {})
+            self.snippet_group_list.clear()
+            for name in sorted(groups.keys()):
+                self.snippet_group_list.addItem(name)
+            if self.snippet_group_list.count() > 0:
+                self.snippet_group_list.setCurrentRow(0)
+            self._refresh_group_tag_list()
+        except Exception as e:
+            self._log.error("load_snippet_group_list_failed", extra={"event": "load_snippet_group_list_failed", "error": str(e)})
+
+    def _refresh_group_tag_list(self):
+        tags = self._collect_all_kurzel_codes()
+        self._group_tag_loading = True
+        self.group_tags_list.blockSignals(True)
+        self.group_tags_list.clear()
+        for tag in tags:
+            item = QListWidgetItem(tag)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.group_tags_list.addItem(item)
+        self.group_tags_list.blockSignals(False)
+        self._group_tag_loading = False
+
+    def _on_snippet_group_selected(self, current, previous):
+        if not current:
+            self.snippet_group_label.setText("Gruppe: (Keine Gruppe gewählt)")
+            self.group_snippets_table.setRowCount(0)
+            return
+
+        group_name = current.text().strip()
+        self.snippet_group_label.setText(f"Gruppe: {group_name}")
+        config = self.settings_manager.get_text_snippet_config()
+        group_data = config.get('groups', {}).get(group_name, {'tags': [], 'snippets': []})
+
+        self._apply_group_tag_selection(group_data.get('tags', []))
+        self._set_group_snippets_table(group_data.get('snippets', []))
+
+    def _add_snippet_group(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Neue Gruppe", "Name der Textbaustein-Gruppe:")
+        if not ok:
+            return
+        cleaned = name.strip()
+        if not cleaned:
+            return
+
+        config = self.settings_manager.get_text_snippet_config()
+        groups = config.setdefault('groups', {})
+        if cleaned in groups:
+            QMessageBox.warning(self, "Gruppe existiert", "Es existiert bereits eine Gruppe mit diesem Namen.")
+            return
+
+        groups[cleaned] = {'tags': [], 'snippets': []}
+        self.settings_manager.set_text_snippet_config(config)
+        self._load_snippet_group_list()
+        items = self.snippet_group_list.findItems(cleaned, Qt.MatchExactly)
+        if items:
+            self.snippet_group_list.setCurrentItem(items[0])
+
+    def _rename_snippet_group(self):
+        from PySide6.QtWidgets import QInputDialog
+        current_item = self.snippet_group_list.currentItem()
+        if not current_item:
+            return
+        old_name = current_item.text()
+        new_name, ok = QInputDialog.getText(self, "Gruppe umbenennen", "Neuer Name:", text=old_name)
+        if not ok:
+            return
+        cleaned = new_name.strip()
+        if not cleaned or cleaned == old_name:
+            return
+
+        config = self.settings_manager.get_text_snippet_config()
+        groups = config.setdefault('groups', {})
+        if cleaned in groups:
+            QMessageBox.warning(self, "Gruppe existiert", "Es existiert bereits eine Gruppe mit diesem Namen.")
+            return
+
+        data = groups.pop(old_name, {'tags': [], 'snippets': []})
+        groups[cleaned] = data
+        self.settings_manager.set_text_snippet_config(config)
+        current_item.setText(cleaned)
+        self.snippet_group_label.setText(f"Gruppe: {cleaned}")
+
+    def _remove_snippet_group(self):
+        current_item = self.snippet_group_list.currentItem()
+        if not current_item:
+            return
+        name = current_item.text()
+        confirm = QMessageBox.question(
+            self,
+            "Gruppe löschen",
+            f"Soll die Gruppe '{name}' mit allen Textbausteinen gelöscht werden?"
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        config = self.settings_manager.get_text_snippet_config()
+        groups = config.setdefault('groups', {})
+        if name in groups:
+            del groups[name]
+            self.settings_manager.set_text_snippet_config(config)
+        self._load_snippet_group_list()
+
+    def _apply_group_tag_selection(self, selected_tags):
+        selected_set = {tag.upper() for tag in selected_tags or []}
+        self._group_tag_loading = True
+        self.group_tags_list.blockSignals(True)
+        for index in range(self.group_tags_list.count()):
+            item = self.group_tags_list.item(index)
+            tag_code = item.text().strip().upper()
+            item.setCheckState(Qt.Checked if tag_code in selected_set else Qt.Unchecked)
+        self.group_tags_list.blockSignals(False)
+        self._group_tag_loading = False
+
+    def _on_group_tag_item_changed(self, item):
+        if self._group_tag_loading:
+            return
+        current_item = self.snippet_group_list.currentItem()
+        if not current_item:
+            return
+        group_name = current_item.text()
+        self._save_current_group_tags(group_name)
+
+    def _save_current_group_tags(self, group_name):
+        selected_tags = []
+        for index in range(self.group_tags_list.count()):
+            item = self.group_tags_list.item(index)
+            if item.checkState() == Qt.Checked:
+                selected_tags.append(item.text().strip().upper())
+
+        config = self.settings_manager.get_text_snippet_config()
+        groups = config.setdefault('groups', {})
+        group = groups.setdefault(group_name, {'tags': [], 'snippets': []})
+        group['tags'] = selected_tags
+        self.settings_manager.set_text_snippet_config(config)
+
+    def _set_group_snippets_table(self, snippets):
+        self.group_snippets_table.setRowCount(0)
+        for snippet in snippets or []:
+            row = self.group_snippets_table.rowCount()
+            self.group_snippets_table.insertRow(row)
+            self.group_snippets_table.setItem(row, 0, QTableWidgetItem(snippet))
+
+    def _add_group_text_snippet(self):
+        current_group = self.snippet_group_list.currentItem()
+        if not current_group:
+            QMessageBox.warning(self, "Keine Gruppe", "Bitte wählen Sie zuerst eine Gruppe aus.")
+            return
+
+        snippet_text = self.group_snippet_input.text().strip()
+        if not snippet_text:
+            return
+
+        row = self.group_snippets_table.rowCount()
+        self.group_snippets_table.insertRow(row)
+        self.group_snippets_table.setItem(row, 0, QTableWidgetItem(snippet_text))
+        self.group_snippet_input.clear()
+
+        self._save_group_snippets(current_group.text(), self._collect_group_snippets())
+
+    def _remove_group_text_snippet(self):
+        current_group = self.snippet_group_list.currentItem()
+        if not current_group:
+            return
+        current_row = self.group_snippets_table.currentRow()
+        if current_row < 0:
+            return
+        self.group_snippets_table.removeRow(current_row)
+        self._save_group_snippets(current_group.text(), self._collect_group_snippets())
+
+    def _edit_group_text_snippet(self):
+        from PySide6.QtWidgets import QInputDialog
+        current_group = self.snippet_group_list.currentItem()
+        if not current_group:
+            return
+        current_row = self.group_snippets_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Keine Auswahl", "Bitte wählen Sie einen Textbaustein zum Bearbeiten aus.")
+            return
+        old_text = self.group_snippets_table.item(current_row, 0).text()
+        new_text, ok = QInputDialog.getText(
+            self, "Gruppen-Textbaustein bearbeiten",
+            "Textbaustein bearbeiten:",
+            text=old_text
+        )
+        if ok and new_text.strip():
+            self.group_snippets_table.setItem(current_row, 0, QTableWidgetItem(new_text.strip()))
+            self._save_group_snippets(current_group.text(), self._collect_group_snippets())
+
+    def _collect_group_snippets(self):
+        snippets = []
+        for row in range(self.group_snippets_table.rowCount()):
+            item = self.group_snippets_table.item(row, 0)
+            if not item:
+                continue
+            text = item.text().strip()
+            if text:
+                snippets.append(text)
+        return snippets
+
+    def _save_group_snippets(self, group_name, snippets):
+        config = self.settings_manager.get_text_snippet_config()
+        groups = config.setdefault('groups', {})
+        group = groups.setdefault(group_name, {'tags': [], 'snippets': []})
+        group['snippets'] = snippets
+        self.settings_manager.set_text_snippet_config(config)
 
     def _load_settings(self):
         """Einstellungen aus SettingsManager laden"""
@@ -964,7 +1279,7 @@ class SettingsDialog(QDialog):
         dark_mode = settings_manager.get("dark_mode", False)
         self.dark_mode_check.setChecked(dark_mode)
         
-        language = settings_manager.get("language", "Deutsch")
+        language = settings_manager.get("language", "English")
         self.language_combo.setCurrentText(language)
         
         last_folder = settings_manager.get("last_folder", "")
@@ -1005,11 +1320,18 @@ class SettingsDialog(QDialog):
         thumb_quality = settings_manager.get("thumb_quality", 85)
         self.thumb_quality_spin.setValue(thumb_quality)
         
-        image_quality = settings_manager.get("image_quality", 95)
-        self.image_quality_spin.setValue(image_quality)
+        # image_quality ENTFERNT - Einzelbild-Ansicht zeigt immer Original-Qualität!
         
         zoom_factor = settings_manager.get("zoom_factor", 1.0)
         self.zoom_factor_spin.setValue(zoom_factor)
+        
+        gallery_overlay_icon_scale = settings_manager.get("gallery_overlay_icon_scale", 1.0)
+        # Konvertiere von Faktor (1.0 = 100%) zu Prozent
+        self.gallery_overlay_icon_scale_spin.setValue(gallery_overlay_icon_scale * 100)
+        
+        # Tastaturkürzel anzeigen
+        show_shortcuts = settings_manager.get("show_keyboard_shortcuts", True)
+        self.show_shortcuts_check.setChecked(show_shortcuts)
         # Tag Overlay Optionen laden
         tag_heading = settings_manager.get("tag_overlay_heading", True)
         self.tag_heading_check.setChecked(bool(tag_heading))
@@ -1049,8 +1371,13 @@ class SettingsDialog(QDialog):
         settings_manager.set("theme", self.theme_combo.currentText())
         settings_manager.set("thumb_size", self.thumb_size_spin.value())
         settings_manager.set("thumb_quality", self.thumb_quality_spin.value())
-        settings_manager.set("image_quality", self.image_quality_spin.value())
+        # image_quality ENTFERNT - Einzelbild-Ansicht zeigt immer Original-Qualität!
         settings_manager.set("zoom_factor", self.zoom_factor_spin.value())
+        # Konvertiere von Prozent zu Faktor (100% = 1.0)
+        settings_manager.set("gallery_overlay_icon_scale", self.gallery_overlay_icon_scale_spin.value() / 100.0)
+        
+        # Tastaturkürzel anzeigen
+        settings_manager.set("show_keyboard_shortcuts", self.show_shortcuts_check.isChecked())
         
         # Crop-Einstellungen entfernt
         
@@ -1084,7 +1411,7 @@ class SettingsDialog(QDialog):
                 settings_manager.set("image_types_en", img_en)
 
             # Aktive Listen gem. Sprache
-            lang_text = (settings_manager.get("language", "Deutsch") or "").lower()
+            lang_text = (settings_manager.get("language", "English") or "").lower()
             if lang_text.startswith("deutsch"):
                 settings_manager.set("damage_categories", dmg_de or settings_manager.get("damage_categories", []))
                 settings_manager.set("image_types", img_de or settings_manager.get("image_types", []))
@@ -1133,8 +1460,10 @@ class SettingsDialog(QDialog):
             "theme": self.theme_combo.currentText(),
             "thumb_size": self.thumb_size_spin.value(),
             "thumb_quality": self.thumb_quality_spin.value(),
-            "image_quality": self.image_quality_spin.value(),
+            # image_quality ENTFERNT - Einzelbild-Ansicht zeigt immer Original-Qualität!
             "zoom_factor": self.zoom_factor_spin.value(),
+            "gallery_overlay_icon_scale": self.gallery_overlay_icon_scale_spin.value(),
+            "show_keyboard_shortcuts": self.show_shortcuts_check.isChecked(),
             "cover_tags": cover_tags
         }
         
@@ -1169,8 +1498,9 @@ class SettingsDialog(QDialog):
             "theme": self.theme_combo.currentText(),
             "thumb_size": self.thumb_size_spin.value(),
             "thumb_quality": self.thumb_quality_spin.value(),
-            "image_quality": self.image_quality_spin.value(),
+            # image_quality ENTFERNT - Einzelbild-Ansicht zeigt immer Original-Qualität!
             "zoom_factor": self.zoom_factor_spin.value(),
+            "gallery_overlay_icon_scale": self.gallery_overlay_icon_scale_spin.value(),
             "valid_kurzel": valid_kurzel
         }
 
